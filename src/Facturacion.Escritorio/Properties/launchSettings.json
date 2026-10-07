@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Facturacion.Escritorio": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}
