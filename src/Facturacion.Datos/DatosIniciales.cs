@@ -26,7 +26,6 @@ internal static class DatosIniciales
             Telefono = "8632-6107 / 8458-8766",
             Email = "wilbersolis@yahoo.com",
             Ruc = "2411011840002F",
-            MensajePie = "¡Gracias por su compra!",
             Condiciones = string.Join('\n',
                 "1) Únicamente se autorizarán las devoluciones que hayan sido denunciadas dentro de un plazo de 10 días.",
                 "2) El comprador da como bueno el valor total de esta factura y se compromete a cancelarlo al vencimiento acordado.",
@@ -48,6 +47,19 @@ internal static class DatosIniciales
         Guardar(cn, tx, ClavesConfiguracion.Facturacion, ServicioConfiguracion.ComoJson(facturacion));
         Guardar(cn, tx, ClavesConfiguracion.Impresion, ServicioConfiguracion.ComoJson(new AjustesImpresion()));
         Guardar(cn, tx, ClavesConfiguracion.SiguienteNumero, facturacion.SiguienteNumero.ToString());
+    }
+
+    /// <summary>Unidades de medida comunes en ferretería (se pueden agregar o renombrar en Productos).</summary>
+    private static readonly string[] Unidades =
+    [
+        "UND", "METRO", "YARDA", "PIE", "PULGADA", "LIBRA", "KILO", "GALÓN", "LITRO",
+        "CUBETA", "ROLLO", "CAJA", "BOLSA", "PAR", "JUEGO", "PLIEGO", "QUINTAL"
+    ];
+
+    public static void InsertarUnidades(SqliteConnection cn, SqliteTransaction tx)
+    {
+        foreach (var nombre in Unidades)
+            cn.Execute("INSERT OR IGNORE INTO Unidades (nombre) VALUES (@nombre)", new { nombre }, tx);
     }
 
     private static void Guardar(SqliteConnection cn, SqliteTransaction tx, string clave, string valor) =>

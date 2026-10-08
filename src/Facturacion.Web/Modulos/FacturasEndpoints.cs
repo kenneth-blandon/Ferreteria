@@ -25,6 +25,12 @@ public static class FacturasEndpoints
         facturas.MapGet("/{id:long}", (ServicioFacturacion s, long id) => s.Obtener(id));
         facturas.MapPost("/", (ServicioFacturacion s, SolicitudFactura datos) => s.Emitir(datos));
         facturas.MapPost("/{id:long}/anular", (ServicioFacturacion s, long id, MotivoSolicitud datos) => s.Anular(id, datos.Motivo));
+
+        // Modificación de una factura emitida: primero se consultan los cambios (sin guardar) y luego
+        // se confirman con el motivo y el nombre del empleado.
+        facturas.MapPost("/{id:long}/cambios", (ServicioFacturacion s, long id, SolicitudFactura datos) =>
+            new { cambios = s.CompararCambios(id, datos) });
+        facturas.MapPut("/{id:long}", (ServicioFacturacion s, long id, SolicitudModificacion datos) => s.Modificar(id, datos));
     }
 
     private static EstadoFactura? LeerEstado(string? estado)

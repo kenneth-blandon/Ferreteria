@@ -33,6 +33,7 @@ public static class Composicion
         servicios.AddSingleton<IConfiguracionRepositorio, ConfiguracionRepositorio>();
         servicios.AddSingleton<IProductoRepositorio, ProductoRepositorio>();
         servicios.AddSingleton<ICategoriaRepositorio, CategoriaRepositorio>();
+        servicios.AddSingleton<IUnidadRepositorio, UnidadRepositorio>();
         servicios.AddSingleton<IClienteRepositorio, ClienteRepositorio>();
         servicios.AddSingleton<IFacturaRepositorio, FacturaRepositorio>();
         servicios.AddSingleton<IInventarioRepositorio, InventarioRepositorio>();

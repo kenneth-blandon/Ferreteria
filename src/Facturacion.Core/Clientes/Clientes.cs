@@ -70,12 +70,10 @@ public sealed class ServicioClientes(IClienteRepositorio clientes, TimeProvider 
         if (clientes.ExisteNombre(nombre, excluirId))
             throw new ReglaNegocioException($"Ya existe un cliente llamado '{nombre}'.");
 
-        var ruc = Texto.MayusculasONulo(datos.Ruc);
-        if (ruc is { Length: > 30 }) throw new ReglaNegocioException("El RUC/cédula admite máximo 30 caracteres.");
+        var ruc = Identificacion.Documento(datos.Ruc);
         var direccion = Texto.MayusculasONulo(datos.Direccion);
         if (direccion is { Length: > 200 }) throw new ReglaNegocioException("La dirección admite máximo 200 caracteres.");
-        var telefono = Texto.LimpiarONulo(datos.Telefono);
-        if (telefono is { Length: > 40 }) throw new ReglaNegocioException("El teléfono admite máximo 40 caracteres.");
+        var telefono = Identificacion.Telefono(datos.Telefono);
 
         return new Cliente { Nombre = nombre, Ruc = ruc, Direccion = direccion, Telefono = telefono };
     }

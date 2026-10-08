@@ -43,6 +43,26 @@ public interface IProductoRepositorio
 
     /// <summary>Carga masiva (UPSERT por código) dentro de una sola transacción.</summary>
     ResultadoCarga CargarMasivo(IReadOnlyList<FilaProducto> filas, DateTime fecha);
+
+    int ContarExistentes(IReadOnlyCollection<long> ids);
+
+    /// <summary>Asigna la categoría (o ninguna) a varios productos en una transacción.</summary>
+    int CambiarCategoria(IReadOnlyCollection<long> ids, long? categoriaId, DateTime fecha);
+
+    /// <summary>Asigna la unidad a varios productos en una transacción.</summary>
+    int CambiarUnidad(IReadOnlyCollection<long> ids, string unidad, DateTime fecha);
+}
+
+public interface IUnidadRepositorio
+{
+    IReadOnlyList<Unidad> Listar();
+    Unidad? Obtener(long id);
+    Unidad? ObtenerPorNombre(string nombre);
+    bool ExisteNombre(string nombre, long? excluirId = null);
+    long Crear(string nombre);
+    /// <summary>Renombra la unidad y la actualiza en los productos que la usan.</summary>
+    void Renombrar(long id, string nombre);
+    void Eliminar(long id);
 }
 
 public interface ICategoriaRepositorio

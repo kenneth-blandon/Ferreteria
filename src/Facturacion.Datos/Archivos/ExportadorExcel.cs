@@ -53,7 +53,7 @@ public sealed class ExportadorExcel : IExportadorInventario
 
         object[][] ejemplos =
         [
-            ["ELE-001", "Cable THHN #12 AWG negro", "Eléctricos", "MTS", 28.50m, 500m, 100m, ""],
+            ["ELE-001", "Cable THHN #12 AWG negro", "Eléctricos", "METRO", 28.50m, 500m, 100m, ""],
             ["FON-001", "Tubo PVC 1/2 pulgada x 6 m", "Fontanería", "UND", 95m, 40m, 10m, ""],
             ["HER-001", "Martillo de uña 16 oz", "Herramientas", "UND", 320m, 12m, 3m, "7501234567890"]
         ];

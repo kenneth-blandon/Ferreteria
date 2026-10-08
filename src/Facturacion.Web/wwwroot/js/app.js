@@ -1,5 +1,5 @@
 // Arranque: navegación entre módulos (#/ruta), atajos globales y datos de la barra lateral.
-import { $, $$, h, hayModal, fecha } from './ui.js';
+import { $, $$, h, hayModal, cerrarModales, fecha } from './ui.js';
 import { api } from './api.js';
 import { obtenerConfiguracion } from './config.js';
 import { esEscritorio } from './impresion.js';
@@ -25,6 +25,7 @@ async function navegar() {
 
   try { actual?.desmontar?.(); } catch { /* el módulo anterior ya no importa */ }
   actual = null;
+  cerrarModales();
 
   $$('#menu a').forEach((a) => a.classList.toggle('activo', a.dataset.ruta === ruta));
   document.title = `${rutas[ruta].titulo} · Facturación`;

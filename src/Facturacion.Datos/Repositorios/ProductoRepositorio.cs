@@ -194,6 +194,43 @@ public sealed class ProductoRepositorio(ConexionSqlite db) : IProductoRepositori
         cn.Execute("DELETE FROM Productos WHERE id = @id", new { id });
     }
 
+    public int ContarExistentes(IReadOnlyCollection<long> ids)
+    {
+        if (ids.Count == 0) return 0;
+        using var cn = db.Abrir();
+        return cn.ExecuteScalar<int>("SELECT COUNT(*) FROM Productos WHERE id IN @ids", new { ids });
+    }
+
+    public int CambiarCategoria(IReadOnlyCollection<long> ids, long? categoriaId, DateTime fecha)
+    {
+        using var cn = db.Abrir();
+        using var tx = cn.BeginTransaction();
+        var cambiados = cn.Execute(
+            "UPDATE Productos SET categoria_id = @categoriaId, actualizado = @fecha WHERE id IN @ids",
+            new { ids, categoriaId, fecha = Sql.Fecha(fecha) }, tx);
+
+        // El nombre de la categoría forma parte del texto de búsqueda.
+        var categoria = categoriaId is null
+            ? null
+            : cn.ExecuteScalar<string?>("SELECT nombre FROM Categorias WHERE id = @categoriaId", new { categoriaId }, tx);
+        var afectados = cn.Query<ProductoTexto>(
+            "SELECT id, codigo, codigo_barras, nombre FROM Productos WHERE id IN @ids", new { ids }, tx);
+        foreach (var p in afectados)
+        {
+            cn.Execute("UPDATE Productos SET busqueda = @busqueda WHERE id = @Id",
+                new { p.Id, busqueda = Texto.ClaveBusqueda(p.Nombre, p.Codigo, p.CodigoBarras, categoria) }, tx);
+        }
+        tx.Commit();
+        return cambiados;
+    }
+
+    public int CambiarUnidad(IReadOnlyCollection<long> ids, string unidad, DateTime fecha)
+    {
+        using var cn = db.Abrir();
+        return cn.Execute("UPDATE Productos SET unidad = @unidad, actualizado = @fecha WHERE id IN @ids",
+            new { ids, unidad, fecha = Sql.Fecha(fecha) });
+    }
+
     public ResultadoCarga CargarMasivo(IReadOnlyList<FilaProducto> filas, DateTime fecha)
     {
         using var cn = db.Abrir();
@@ -221,6 +258,10 @@ public sealed class ProductoRepositorio(ConexionSqlite db) : IProductoRepositori
                     }
                     categoriaId = idCategoria;
                 }
+
+                // Las unidades nuevas del archivo se agregan a la lista de unidades.
+                if (fila.Unidad is { } unidad)
+                    cn.Execute("INSERT OR IGNORE INTO Unidades (nombre) VALUES (@unidad)", new { unidad }, tx);
 
                 var existente = cn.QuerySingleOrDefault<ProductoExistente>("""
                     SELECT p.id, p.stock, p.codigo_barras, c.nombre AS categoria
@@ -303,6 +344,14 @@ public sealed class ProductoRepositorio(ConexionSqlite db) : IProductoRepositori
             ? null
             : cn.ExecuteScalar<string?>("SELECT nombre FROM Categorias WHERE id = @categoriaId", new { categoriaId }, tx);
         return Texto.ClaveBusqueda(nombre, codigo, barras, categoria);
+    }
+
+    private sealed class ProductoTexto
+    {
+        public long Id { get; set; }
+        public string Codigo { get; set; } = "";
+        public string? CodigoBarras { get; set; }
+        public string Nombre { get; set; } = "";
     }
 
     private sealed class ProductoExistente

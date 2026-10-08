@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.Routing;
 
 namespace Facturacion.Web.Modulos;
 
-/// <summary>/api/productos y /api/categorias</summary>
+/// <summary>/api/productos, /api/categorias y /api/unidades</summary>
 public static class CatalogoEndpoints
 {
     public sealed record NombreSolicitud(string? Nombre);
@@ -20,6 +20,16 @@ public static class CatalogoEndpoints
         categorias.MapDelete("/{id:long}", (ServicioCatalogo s, long id) =>
         {
             s.EliminarCategoria(id);
+            return Results.NoContent();
+        });
+
+        var unidades = app.MapGroup("/api/unidades");
+        unidades.MapGet("/", (ServicioCatalogo s) => s.Unidades());
+        unidades.MapPost("/", (ServicioCatalogo s, NombreSolicitud datos) => s.CrearUnidad(datos.Nombre));
+        unidades.MapPut("/{id:long}", (ServicioCatalogo s, long id, NombreSolicitud datos) => s.RenombrarUnidad(id, datos.Nombre));
+        unidades.MapDelete("/{id:long}", (ServicioCatalogo s, long id) =>
+        {
+            s.EliminarUnidad(id);
             return Results.NoContent();
         });
 
@@ -38,6 +48,9 @@ public static class CatalogoEndpoints
         productos.MapPost("/", (ServicioCatalogo s, DatosProducto datos) => s.Crear(datos));
         productos.MapPut("/{id:long}", (ServicioCatalogo s, long id, DatosProducto datos) => s.Actualizar(id, datos));
         productos.MapPatch("/{id:long}/precio", (ServicioCatalogo s, long id, PrecioSolicitud datos) => s.CambiarPrecio(id, datos.Precio));
+
+        // Cambio en bloque: solo categoría o unidad (el tipo CampoMasivo no admite otros campos).
+        productos.MapPost("/masivo", (ServicioCatalogo s, SolicitudMasiva datos) => s.ActualizarMasivo(datos));
         productos.MapDelete("/{id:long}", (ServicioCatalogo s, long id) =>
         {
             s.Eliminar(id);

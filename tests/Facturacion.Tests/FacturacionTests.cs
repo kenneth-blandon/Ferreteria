@@ -34,13 +34,13 @@ public class FacturacionTests : IDisposable
     {
         var cable = e.CrearProducto("ELE-001", "Cable THHN #12", 28.50m);
         var emitida = e.Facturacion.Emitir(new SolicitudFactura(
-            new ClienteSolicitud(null, "  juan pérez ", "001-010190-0001a", "barrio x", Guardar: true),
+            new ClienteSolicitud(null, "  juan pérez ", "001-010190-0001n", "barrio x", Guardar: true),
             [Entorno.Linea(cable, 2), new LineaSolicitud(null, "corte de tubo", "", 1, 15m)],
             MetodoPago.Efectivo, 100m, null));
 
         var leida = e.Facturacion.Obtener(emitida.Id);
         Assert.Equal("JUAN PÉREZ", leida.ClienteNombre);
-        Assert.Equal("001-010190-0001A", leida.ClienteRuc);
+        Assert.Equal("001-010190-0001N", leida.ClienteRuc);
         Assert.NotNull(leida.ClienteId);
         Assert.Equal(e.Reloj.Ahora, leida.Fecha);
         Assert.Equal(MetodoPago.Efectivo, leida.MetodoPago);
@@ -207,7 +207,30 @@ public class FacturacionTests : IDisposable
         Assert.False(ajustes.Facturacion.IvaHabilitado);
         Assert.Equal("A", ajustes.Facturacion.Serie);
         Assert.Equal(44000, ajustes.Facturacion.RangoHasta);
-        Assert.Equal(FormatoImpresion.Carta, ajustes.Impresion.Formato);
+        Assert.Equal(22, ajustes.Impresion.Plantilla.Filas.Maximo);
         Assert.False(string.IsNullOrWhiteSpace(ajustes.Negocio.NombreComercial));
+    }
+
+    [Fact]
+    public void No_permite_mas_lineas_que_el_talonario()
+    {
+        var lineas = Enumerable.Range(1, 23)
+            .Select(i => new LineaSolicitud(null, $"Artículo {i}", null, 1, 10m))
+            .ToArray();
+        var error = Assert.Throws<ReglaNegocioException>(() => e.Facturacion.Emitir(Entorno.Venta(lineas)));
+        Assert.Contains("22 líneas", error.Message);
+        Assert.Equal(22, e.Facturacion.Emitir(Entorno.Venta(lineas[..22])).Lineas.Count);
+    }
+
+    [Fact]
+    public void Valida_el_ruc_o_cedula_del_cliente()
+    {
+        var p = e.CrearProducto("X-1", "Producto", 10m);
+        Assert.Throws<ReglaNegocioException>(() => e.Facturacion.Emitir(new SolicitudFactura(
+            new ClienteSolicitud(null, "Juan", "12345", null), [Entorno.Linea(p, 1)], MetodoPago.Efectivo, null, null)));
+
+        var factura = e.Facturacion.Emitir(new SolicitudFactura(
+            new ClienteSolicitud(null, "Ferretería S.A.", " j0310000007669 ", null), [Entorno.Linea(p, 1)], MetodoPago.Efectivo, null, null));
+        Assert.Equal("J0310000007669", factura.ClienteRuc);
     }
 }

@@ -1,7 +1,8 @@
-// Impresión. En la versión de escritorio se pide a la ventana (C#) que imprima directo en la
-// impresora configurada, sin cuadro de diálogo. En el navegador se usa el cuadro de impresión.
+// Impresión en el talonario preimpreso. En la versión de escritorio se pide a la ventana (C#) que
+// imprima directo en la impresora configurada, sin cuadro de diálogo. En el navegador se usa el
+// cuadro de impresión. La hoja carta es solo vista previa (y PDF).
 import { obtenerConfiguracion } from './config.js';
-import { abrirModal, h, aviso } from './ui.js';
+import { abrirModal, h, aviso, dinero } from './ui.js';
 
 const webview = window.chrome?.webview;
 export const esEscritorio = Boolean(webview);
@@ -38,8 +39,11 @@ function enviarAVentana(mensaje) {
   });
 }
 
-export const rutaFactura = (id, formato, reimpresion = false) =>
-  `/imprimir/factura/${id}?formato=${encodeURIComponent(formato)}${reimpresion ? '&reimpresion=true' : ''}`;
+/** Datos de la factura sobre el formulario preimpreso (lo que se envía a la impresora). */
+export const rutaFactura = (id) => `/imprimir/factura/${id}`;
+
+/** Vista previa en hoja carta: el talonario completo con los datos. */
+export const rutaVista = (id, reimpresion = false) => `/imprimir/factura/${id}/vista${reimpresion ? '?reimpresion=true' : ''}`;
 
 /** Imprime un documento de /imprimir/... según la configuración. */
 export async function imprimir(ruta) {
@@ -76,21 +80,68 @@ export async function guardarPdf(ruta, nombreArchivo) {
   return null;
 }
 
-/** Muestra el documento tal como se imprimirá. */
-export function vistaPrevia(ruta, titulo) {
+/**
+ * Muestra un documento tal como se verá. Si se indica rutaImpresion aparece el botón para
+ * imprimirlo (por ejemplo, la factura en el talonario).
+ */
+export function vistaPrevia(ruta, titulo, { rutaImpresion, textoImprimir = 'Imprimir' } = {}) {
   abrirModal({
     titulo,
     ancho: 'xl',
     cuerpo: h`<iframe class="marco-vista" src="${ruta}" title="${titulo}"></iframe>`,
     botones: [
-      { texto: 'Cerrar' },
-      {
-        texto: 'Imprimir', clase: 'btn-primario', primario: true,
-        accion: async () => {
-          await imprimir(ruta);
-          aviso('Documento enviado a la impresora.');
-        }
-      }
+      { texto: 'Cerrar', primario: !rutaImpresion },
+      ...(rutaImpresion
+        ? [{
+            texto: textoImprimir, clase: 'btn-primario', primario: true,
+            accion: async () => {
+              await imprimir(rutaImpresion);
+              aviso('Documento enviado a la impresora.');
+            }
+          }]
+        : [])
     ]
+  });
+}
+
+/**
+ * Paso final al generar o corregir una factura: indica qué formulario del talonario colocar
+ * en la impresora y espera la orden de imprimir. Devuelve true si se imprimió.
+ */
+export function dialogoImprimir(factura, { titulo } = {}) {
+  return new Promise((resolver) => {
+    let impreso = false;
+    abrirModal({
+      titulo: titulo || `Imprimir factura ${factura.numeroCompleto}`,
+      ancho: 'sm',
+      cuerpo: h`
+        <div class="paso-impresion">
+          ${factura.vuelto ? h`<div class="vuelto"><span>Vuelto a entregar</span><b>${dinero(factura.vuelto)}</b></div>` : ''}
+          <div class="formulario-talonario"><span>Formulario del talonario</span><b>No. ${factura.numero}</b></div>
+          <ol>
+            <li>Coloque el formulario <b>No. ${factura.numero}</b> en la impresora, alineado en el tractor de arrastre.</li>
+            <li>Presione <b>Imprimir</b>.</li>
+          </ol>
+        </div>`,
+      botones: [
+        {
+          texto: 'Vista previa', izquierda: true,
+          accion: () => {
+            vistaPrevia(rutaVista(factura.id), `Vista previa · factura ${factura.numeroCompleto}`);
+            return false;
+          }
+        },
+        { texto: 'Imprimir más tarde' },
+        {
+          texto: 'Imprimir  (Enter)', clase: 'btn-primario', primario: true,
+          accion: async () => {
+            await imprimir(rutaFactura(factura.id));
+            impreso = true;
+            aviso(`Factura ${factura.numeroCompleto} enviada a la impresora.`);
+          }
+        }
+      ],
+      alCerrar: () => resolver(impreso)
+    });
   });
 }

@@ -10,8 +10,8 @@ using Microsoft.AspNetCore.Routing;
 namespace Facturacion.Web.Modulos;
 
 /// <summary>
-/// /imprimir/...: documentos HTML listos para imprimir. La ventana de escritorio los carga
-/// en un navegador oculto y los envía directo a la impresora configurada.
+/// /imprimir/...: documentos HTML. La factura se imprime SOLO sobre el talonario preimpreso;
+/// la hoja carta es la vista previa (y el PDF). La ventana de escritorio los envía directo a la impresora.
 /// </summary>
 public static class ImpresionEndpoints
 {
@@ -21,46 +21,28 @@ public static class ImpresionEndpoints
     {
         var imprimir = app.MapGroup("/imprimir");
 
-        imprimir.MapGet("/factura/{id:long}", (long id, string? formato, bool? reimpresion,
-            ServicioFacturacion facturas, ServicioConfiguracion configuracion) =>
-        {
-            var factura = facturas.Obtener(id);
-            var ajustes = configuracion.Obtener();
-            var esReimpresion = reimpresion ?? false;
-            var html = (LeerFormato(formato) ?? ajustes.Impresion.Formato) switch
-            {
-                FormatoImpresion.Ticket => PlantillaTicket.Generar(factura, ajustes, esReimpresion),
-                FormatoImpresion.Preimpreso => PlantillaPreimpreso.Generar(factura, ajustes.Impresion),
-                _ => PlantillaCarta.Generar(factura, ajustes, esReimpresion)
-            };
-            return Results.Content(html, TipoHtml);
-        });
+        // Lo que se envía a la impresora de matriz de punto: solo los datos, alineados al formulario.
+        imprimir.MapGet("/factura/{id:long}", (long id, ServicioFacturacion facturas, ServicioConfiguracion configuracion) =>
+            Results.Content(PlantillaPreimpreso.Generar(facturas.Obtener(id), configuracion.ObtenerImpresion()), TipoHtml));
 
-        imprimir.MapGet("/cierre", (DateOnly? fecha, string? formato, ServicioReportes reportes,
-            ServicioConfiguracion configuracion, TimeProvider reloj) =>
+        // Vista previa: el talonario completo con los datos, para ver cómo quedará la factura.
+        imprimir.MapGet("/factura/{id:long}/vista", (long id, bool? reimpresion, ServicioFacturacion facturas,
+            ServicioConfiguracion configuracion) =>
+            Results.Content(PlantillaCarta.Generar(facturas.Obtener(id), configuracion.Obtener(), reimpresion ?? false), TipoHtml));
+
+        imprimir.MapGet("/cierre", (DateOnly? fecha, ServicioReportes reportes, ServicioConfiguracion configuracion, TimeProvider reloj) =>
         {
             var ahora = reloj.AhoraLocal();
             var resumen = reportes.Cierre(fecha ?? DateOnly.FromDateTime(ahora));
-            var ajustes = configuracion.Obtener();
-            // El cierre no tiene versión preimpresa: se usa la hoja carta.
-            var formatoCierre = LeerFormato(formato) ?? ajustes.Impresion.Formato;
-            return Results.Content(PlantillaCierre.Generar(resumen, ajustes, formatoCierre, ahora), TipoHtml);
+            return Results.Content(PlantillaCierre.Generar(resumen, configuracion.Obtener(), ahora), TipoHtml);
         });
 
-        // Hoja de prueba para alinear el formato preimpreso con el talonario.
+        // Hoja de prueba para alinear la plantilla con el talonario (llena todas las filas).
         imprimir.MapGet("/calibracion", (bool? cuadricula, ServicioConfiguracion configuracion, TimeProvider reloj) =>
         {
-            var ejemplo = PlantillaPreimpreso.FacturaDeEjemplo(reloj.AhoraLocal());
-            return Results.Content(
-                PlantillaPreimpreso.Generar(ejemplo, configuracion.ObtenerImpresion(), cuadricula ?? true), TipoHtml);
+            var impresion = configuracion.ObtenerImpresion();
+            var ejemplo = PlantillaPreimpreso.FacturaDeEjemplo(reloj.AhoraLocal(), impresion.Plantilla.Filas.Maximo);
+            return Results.Content(PlantillaPreimpreso.Generar(ejemplo, impresion, cuadricula ?? true), TipoHtml);
         });
-    }
-
-    private static FormatoImpresion? LeerFormato(string? formato)
-    {
-        if (string.IsNullOrWhiteSpace(formato)) return null;
-        return Enum.TryParse<FormatoImpresion>(formato, ignoreCase: true, out var valor)
-            ? valor
-            : throw new ReglaNegocioException("Formato de impresión no válido.");
     }
 }

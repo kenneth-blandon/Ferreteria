@@ -36,6 +36,27 @@ public sealed record DatosProducto(
     decimal StockMinimo,
     decimal StockInicial = 0);
 
+/// <summary>Unidad de medida (UND, METRO, YARDA...). Lista administrable, igual que las categorías.</summary>
+public sealed class Unidad
+{
+    public const string Predeterminada = "UND";
+
+    public long Id { get; set; }
+    public string Nombre { get; set; } = "";
+    public int TotalProductos { get; set; }
+}
+
+/// <summary>
+/// Campos que se pueden cambiar en bloque. Por diseño NO existen nombre, precio, código,
+/// código de barras ni existencias: esos datos se cambian producto por producto.
+/// </summary>
+public enum CampoMasivo { Categoria, Unidad }
+
+/// <summary>Cambio en bloque. Categoría: CategoriaId (null = sin categoría). Unidad: nombre de la unidad.</summary>
+public sealed record SolicitudMasiva(IReadOnlyList<long>? ProductoIds, CampoMasivo Campo, long? CategoriaId, string? Unidad);
+
+public sealed record ResultadoMasivo(int Actualizados, CampoMasivo Campo, string Valor);
+
 public sealed record FiltroProductos(
     string? Texto = null,
     long? CategoriaId = null,

@@ -38,7 +38,40 @@ public sealed class Factura
     public string? MotivoAnulacion { get; set; }
     public DateTime? FechaAnulacion { get; set; }
 
+    /// <summary>Fecha de la última modificación (null si nunca se modificó).</summary>
+    public DateTime? FechaModificacion { get; set; }
+    public bool Modificada => FechaModificacion.HasValue;
+
     public List<LineaFactura> Lineas { get; set; } = [];
+
+    /// <summary>Historial de modificaciones (solo al consultar una factura).</summary>
+    public List<ModificacionFactura> Modificaciones { get; set; } = [];
+}
+
+/// <summary>Constancia de una modificación: quién, por qué y qué cambió.</summary>
+public sealed class ModificacionFactura
+{
+    public long Id { get; set; }
+    public long FacturaId { get; set; }
+    public DateTime Fecha { get; set; }
+    public string Empleado { get; set; } = "";
+    public string Motivo { get; set; } = "";
+    public List<string> Cambios { get; set; } = [];
+    public decimal TotalAnterior { get; set; }
+    public decimal TotalNuevo { get; set; }
+}
+
+/// <summary>Datos corregidos de una factura emitida más la constancia obligatoria.</summary>
+public sealed record SolicitudModificacion(
+    ClienteSolicitud? Cliente,
+    IReadOnlyList<LineaSolicitud>? Lineas,
+    MetodoPago MetodoPago,
+    decimal? MontoRecibido,
+    string? Referencia,
+    string? Motivo,
+    string? Empleado)
+{
+    public SolicitudFactura ComoFactura() => new(Cliente, Lineas, MetodoPago, MontoRecibido, Referencia);
 }
 
 public sealed class LineaFactura

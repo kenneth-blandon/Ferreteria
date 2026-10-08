@@ -1,21 +1,16 @@
-// Historial de facturas: consulta del día (o rango), reimpresión y anulación.
+// Historial de facturas: consulta del día (o rango), reimpresión, modificación y anulación.
 import { api, conParametros } from '../api.js';
-import { $, h, dinero, numero2, cantidad as formatoCantidad, debounce, aviso, abrirModal, pedirTexto, fechaHora, hora, hoyIso } from '../ui.js';
-import { obtenerConfiguracion } from '../config.js';
-import { imprimir, guardarPdf, rutaFactura, vistaPrevia, esEscritorio } from '../impresion.js';
+import { $, h, dinero, numero2, cantidad as formatoCantidad, debounce, aviso, abrirModal, pedirTexto, fechaHora, hoyIso } from '../ui.js';
+import { imprimir, guardarPdf, rutaFactura, rutaVista, vistaPrevia, esEscritorio } from '../impresion.js';
 import { actualizarAlertas } from '../app.js';
-
-const FORMATOS = { Carta: 'Hoja carta', Ticket: 'Ticket', Preimpreso: 'Preimpreso' };
 
 let raiz;
 let facturas = [];
 let filtro;
-let formatoPredeterminado = 'Carta';
 
 export async function montar(contenedor) {
   raiz = contenedor;
   filtro = { desde: hoyIso(), hasta: hoyIso(), texto: '', estado: '' };
-  formatoPredeterminado = (await obtenerConfiguracion()).impresion.formato;
 
   raiz.innerHTML = h`
     <div class="encabezado">
@@ -53,7 +48,8 @@ export async function montar(contenedor) {
     if (!fila) return;
     const factura = facturas.find((f) => f.id === Number(fila.dataset.id));
     const accion = e.target.closest('[data-accion]')?.dataset.accion;
-    if (accion === 'imprimir') reimprimir(factura.id, formatoPredeterminado);
+    if (accion === 'imprimir') reimprimir(factura);
+    else if (accion === 'modificar') modificar(factura);
     else if (accion === 'anular') anular(factura);
     else verDetalle(factura.id);
   });
@@ -74,6 +70,12 @@ function fijarDia(dia) {
   cargar();
 }
 
+function chipsEstado(f) {
+  const anulada = f.estado === 'Anulada';
+  return h`<span class="chip ${anulada ? 'chip-rojo' : 'chip-verde'}">${f.estado}</span>
+    ${f.modificada && !anulada ? h`<span class="chip chip-ambar" title="Modificada el ${fechaHora(f.fechaModificacion)}">MODIFICADA</span>` : ''}`;
+}
+
 async function cargar() {
   try {
     facturas = await api.get(conParametros('/api/facturas', filtro));
@@ -87,31 +89,38 @@ async function cargar() {
           <td>${f.clienteNombre}</td>
           <td>${f.metodoPago}</td>
           <td class="num total-celda">${dinero(f.total)}</td>
-          <td><span class="chip ${anulada ? 'chip-rojo' : 'chip-verde'}">${f.estado}</span></td>
+          <td><div class="chips">${chipsEstado(f)}</div></td>
           <td><div class="acciones-fila">
-            <button type="button" class="btn btn-sm" data-accion="imprimir">Reimprimir</button>
-            ${anulada ? '' : h`<button type="button" class="btn btn-sm" data-accion="anular">Anular</button>`}
+            <button type="button" class="btn btn-sm" data-accion="imprimir" title="Imprimir en el talonario">Imprimir</button>
+            ${anulada ? '' : h`
+              <button type="button" class="btn btn-sm" data-accion="modificar">Modificar</button>
+              <button type="button" class="btn btn-sm" data-accion="anular">Anular</button>`}
           </div></td>
         </tr>`;
     })}`;
     $('#vacio', raiz).hidden = facturas.length > 0;
     const emitidas = facturas.filter((f) => f.estado === 'Emitida');
     const total = emitidas.reduce((s, f) => s + f.total, 0);
-    const anuladas = facturas.length - emitidas.length;
+    const modificadas = emitidas.filter((f) => f.modificada).length;
     $('#resumen', raiz).textContent =
-      `${emitidas.length} emitidas · ${anuladas} anuladas · Total emitido: ${dinero(total)}`;
+      `${emitidas.length} emitidas (${modificadas} modificadas) · ${facturas.length - emitidas.length} anuladas · Total emitido: ${dinero(total)}`;
   } catch (error) {
     aviso(error.message, 'error');
   }
 }
 
-async function reimprimir(id, formato) {
+async function reimprimir(factura) {
   try {
-    await imprimir(rutaFactura(id, formato, true));
-    aviso('Factura enviada a la impresora.');
+    await imprimir(rutaFactura(factura.id));
+    aviso(`Factura ${factura.numeroCompleto} enviada a la impresora (formulario No. ${factura.numero}).`);
   } catch (error) {
     aviso(error.message, 'error', 7000);
   }
+}
+
+/** Lleva la factura a la pantalla de facturación para corregirla. */
+function modificar(factura) {
+  location.hash = `#/facturar?modificar=${factura.id}`;
 }
 
 async function verDetalle(id) {
@@ -134,7 +143,8 @@ async function verDetalle(id) {
       ${anulada ? h`<div class="aviso-caja" style="margin-bottom:10px">ANULADA el ${fechaHora(f.fechaAnulacion)} · Motivo: ${f.motivoAnulacion}</div>` : ''}
       <dl class="lista-datos">
         <dt>Fecha</dt><dd>${fechaHora(f.fecha)}</dd>
-        <dt>Cliente</dt><dd>${f.clienteNombre}${f.clienteRuc ? h` · RUC ${f.clienteRuc}` : ''}</dd>
+        <dt>Estado</dt><dd><div class="chips">${chipsEstado(f)}</div></dd>
+        <dt>Cliente</dt><dd>${f.clienteNombre}${f.clienteRuc ? h` · RUC/Céd. ${f.clienteRuc}` : ''}</dd>
         ${f.clienteDireccion ? h`<dt>Dirección</dt><dd>${f.clienteDireccion}</dd>` : ''}
         <dt>Pago</dt><dd>${pago}</dd>
       </dl>
@@ -148,17 +158,25 @@ async function verDetalle(id) {
         ${f.iva ? h`<div>Subtotal ${dinero(f.subtotal)} · IVA ${dinero(f.iva)}</div>` : ''}
         <div style="font-size:18px"><b>Total ${dinero(f.total)}</b></div>
       </div>
+      ${f.modificaciones.length ? h`
+        <h3 style="margin:14px 0 6px">Modificaciones</h3>
+        <div class="modificaciones">${f.modificaciones.map((m) => h`
+          <div class="modificacion">
+            <div class="modificacion-cabecera"><b>${fechaHora(m.fecha)}</b> · ${m.empleado}
+              <span class="suave">· total ${dinero(m.totalAnterior)} → ${dinero(m.totalNuevo)}</span></div>
+            <div><b>Motivo:</b> ${m.motivo}</div>
+            <ul class="lista-cambios">${m.cambios.map((c) => h`<li>${c}</li>`)}</ul>
+          </div>`)}</div>` : ''}
       <div class="acciones" style="margin-top:14px">
-        <label class="suave" for="formatoDetalle">Formato:</label>
-        <select id="formatoDetalle" style="width:auto">
-          ${Object.entries(FORMATOS).map(([valor, texto]) => h`<option value="${valor}" ${valor === formatoPredeterminado ? h`selected` : ''}>${texto}</option>`)}
-        </select>
         <button type="button" class="btn" data-accion="vista">Vista previa</button>
-        <button type="button" class="btn" data-accion="imprimir">Reimprimir</button>
+        <button type="button" class="btn" data-accion="imprimir">Imprimir en talonario</button>
         ${esEscritorio ? h`<button type="button" class="btn" data-accion="pdf">Guardar PDF</button>` : ''}
       </div>`,
     botones: [
-      ...(anulada ? [] : [{ texto: 'Anular factura', clase: 'btn-peligro izquierda', izquierda: true, accion: () => { anular(f); } }]),
+      ...(anulada ? [] : [
+        { texto: 'Anular', clase: 'btn-peligro izquierda', izquierda: true, accion: () => { anular(f); } },
+        { texto: 'Modificar', izquierda: true, accion: () => { modificar(f); } }
+      ]),
       { texto: 'Cerrar', primario: true }
     ]
   });
@@ -166,11 +184,13 @@ async function verDetalle(id) {
   modal.cuerpo.addEventListener('click', async (e) => {
     const accion = e.target.closest('[data-accion]')?.dataset.accion;
     if (!accion) return;
-    const formato = $('#formatoDetalle', modal.cuerpo).value;
-    if (accion === 'vista') vistaPrevia(rutaFactura(f.id, formato, true), `Factura ${f.numeroCompleto}`);
-    else if (accion === 'imprimir') reimprimir(f.id, formato);
-    else if (accion === 'pdf') {
-      try { await guardarPdf(rutaFactura(f.id, 'Carta'), `Factura-${f.numeroCompleto}.pdf`); } catch (error) { aviso(error.message, 'error'); }
+    if (accion === 'vista') {
+      vistaPrevia(rutaVista(f.id, true), `Vista previa · factura ${f.numeroCompleto}`,
+        { rutaImpresion: rutaFactura(f.id), textoImprimir: 'Imprimir en talonario' });
+    } else if (accion === 'imprimir') {
+      reimprimir(f);
+    } else if (accion === 'pdf') {
+      try { await guardarPdf(rutaVista(f.id), `Factura-${f.numeroCompleto}.pdf`); } catch (error) { aviso(error.message, 'error'); }
     }
   });
 }

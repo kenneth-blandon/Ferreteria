@@ -8,11 +8,19 @@ namespace Facturacion.Web.Impresion;
 
 /// <summary>
 /// Imprime SOLO los datos variables sobre el formulario preimpreso del talonario
-/// (impresora de matriz de punto con papel autocopiante). Cada dato se ubica en milímetros
-/// según la plantilla configurada más el desplazamiento de calibración.
+/// (impresora de matriz de punto). Cada dato va en una caja en milímetros según la plantilla
+/// configurada, más el desplazamiento de calibración; el texto se centra verticalmente en la caja.
 /// </summary>
 internal static class PlantillaPreimpreso
 {
+    /// <summary>Texto de la línea CLIENTE tal como se imprime.</summary>
+    public static string TextoCliente(Factura f) =>
+        f.ClienteRuc is { Length: > 0 } ruc ? $"{f.ClienteNombre}   RUC/CÉD.: {ruc}" : f.ClienteNombre;
+
+    /// <summary>Descripción con la unidad cuando no es la predeterminada: "CABLE THHN #12 (METRO)".</summary>
+    public static string TextoDescripcion(LineaFactura l) =>
+        l.Unidad is "UND" or "" ? l.Descripcion : $"{l.Descripcion} ({l.Unidad})";
+
     public static string Generar(Factura f, AjustesImpresion imp, bool cuadricula = false)
     {
         var p = imp.Plantilla;
@@ -22,60 +30,71 @@ internal static class PlantillaPreimpreso
         var estilos = $$"""
             body { font-family: 'Courier New', Courier, monospace; font-size: {{Pt(p.TamanoFuentePt)}}; font-weight: 700; }
             .hoja { position: relative; width: {{Mm(p.AnchoPaginaMm)}}; height: {{Mm(p.AltoPaginaMm)}}; overflow: hidden; }
-            .d { position: absolute; white-space: nowrap; overflow: hidden; line-height: 1.15; }
-            .der { text-align: right; }
-            .cen { text-align: center; }
+            .d { position: absolute; display: flex; align-items: center; white-space: nowrap; overflow: hidden; line-height: 1; }
+            .cen { justify-content: center; }
+            .der { justify-content: flex-end; }
             .linea-v { position: absolute; top: 0; bottom: 0; border-left: 1px solid #9ec5fe; }
             .linea-h { position: absolute; left: 0; right: 0; border-top: 1px solid #9ec5fe; }
             .linea-v.cada50, .linea-h.cada50 { border-color: #3b82f6; }
             .regla { position: absolute; font: 7pt Arial, sans-serif; color: #2563eb; }
+            .caja-guia { position: absolute; outline: 1px dashed rgba(220, 38, 38, .55); }
             """;
 
         var c = new StringBuilder("<div class=\"hoja\">");
         if (cuadricula) Cuadricula(c, p);
 
-        void Dato(decimal x, decimal y, decimal ancho, string texto, string clase = "") =>
-            c.Append($"<div class=\"d {clase}\" style=\"left:{Mm(x + dx)};top:{Mm(y + dy)};width:{Mm(ancho)}\">{E(texto)}</div>");
+        void Caja(decimal x, decimal y, decimal ancho, decimal alto, string texto, string clase = "")
+        {
+            var estilo = $"left:{Mm(x + dx)};top:{Mm(y + dy)};width:{Mm(ancho)};height:{Mm(alto)}";
+            if (cuadricula) c.Append($"<div class=\"caja-guia\" style=\"{estilo}\"></div>");
+            c.Append($"<div class=\"d {clase}\" style=\"{estilo}\">{E(texto)}</div>");
+        }
 
-        Dato(p.Dia.X, p.Dia.Y, p.Dia.Ancho, f.Fecha.ToString("dd"), "cen");
-        Dato(p.Mes.X, p.Mes.Y, p.Mes.Ancho, f.Fecha.ToString("MM"), "cen");
-        Dato(p.Anio.X, p.Anio.Y, p.Anio.Ancho, f.Fecha.ToString("yyyy"), "cen");
-        Dato(p.Cliente.X, p.Cliente.Y, p.Cliente.Ancho,
-            f.ClienteRuc is { Length: > 0 } ruc ? $"{f.ClienteNombre}  RUC: {ruc}" : f.ClienteNombre);
-        Dato(p.Direccion.X, p.Direccion.Y, p.Direccion.Ancho, f.ClienteDireccion ?? "");
+        void Campo(Posicion pos, string texto, string clase = "") => Caja(pos.X, pos.Y, pos.Ancho, pos.Alto, texto, clase);
+
+        Campo(p.Dia, f.Fecha.ToString("dd"), "cen");
+        Campo(p.Mes, f.Fecha.ToString("MM"), "cen");
+        Campo(p.Anio, f.Fecha.ToString("yyyy"), "cen");
+        Campo(p.Cliente, TextoCliente(f));
+        Campo(p.Direccion, f.ClienteDireccion ?? "");
 
         var filas = f.Lineas.Take(p.Filas.Maximo).ToList();
         for (var i = 0; i < filas.Count; i++)
         {
             var l = filas[i];
             var y = p.Filas.Y + i * p.Filas.Alto;
-            Dato(p.Cantidad.X, y, p.Cantidad.Ancho, Dinero.Cantidad(l.Cantidad), "cen");
-            Dato(p.Descripcion.X, y, p.Descripcion.Ancho, l.Unidad is "UND" or "" ? l.Descripcion : $"{l.Descripcion} ({l.Unidad})");
-            Dato(p.PrecioUnitario.X, y, p.PrecioUnitario.Ancho, Dinero.Numero(l.PrecioUnitario), "der");
-            Dato(p.Importe.X, y, p.Importe.Ancho, Dinero.Numero(l.Total), "der");
+            Caja(p.Cantidad.X, y, p.Cantidad.Ancho, p.Filas.Alto, Dinero.Cantidad(l.Cantidad), "cen");
+            Caja(p.Descripcion.X, y, p.Descripcion.Ancho, p.Filas.Alto, TextoDescripcion(l));
+            Caja(p.PrecioUnitario.X, y, p.PrecioUnitario.Ancho, p.Filas.Alto, Dinero.Numero(l.PrecioUnitario), "der");
+            Caja(p.Importe.X, y, p.Importe.Ancho, p.Filas.Alto, Dinero.Numero(l.Total), "der");
         }
 
-        Dato(p.Total.X, p.Total.Y, p.Total.Ancho, Dinero.Numero(f.Total), "der");
+        Campo(p.Total, Dinero.Numero(f.Total), "der");
         c.Append("</div>");
-        return Documento($"Factura {f.NumeroCompleto} (preimpreso)", estilos, c.ToString());
+        return Documento($"Factura {f.NumeroCompleto} (talonario)", estilos, c.ToString());
     }
 
-    /// <summary>Factura de ejemplo para la hoja de calibración.</summary>
-    public static Factura FacturaDeEjemplo(DateTime fecha) => new()
+    /// <summary>Factura de prueba que llena todas las filas: así se ve si las últimas se corren.</summary>
+    public static Factura FacturaDeEjemplo(DateTime fecha, int filas)
     {
-        Serie = "A",
-        Numero = 0,
-        Fecha = fecha,
-        ClienteNombre = "CLIENTE DE PRUEBA",
-        ClienteDireccion = "DIRECCIÓN DE PRUEBA, MANAGUA",
-        Lineas =
-        [
-            new LineaFactura { Cantidad = 1, Descripcion = "PRIMERA LÍNEA DE PRUEBA", Unidad = "UND", PrecioUnitario = 1234.50m, Total = 1234.50m },
-            new LineaFactura { Cantidad = 12.5m, Descripcion = "SEGUNDA LÍNEA", Unidad = "MTS", PrecioUnitario = 28.50m, Total = 356.25m },
-            new LineaFactura { Cantidad = 100, Descripcion = "TERCERA LÍNEA", Unidad = "UND", PrecioUnitario = 2m, Total = 200m }
-        ],
-        Total = 1790.75m
-    };
+        var lineas = Enumerable.Range(1, filas).Select(i => new LineaFactura
+        {
+            Cantidad = i,
+            Descripcion = $"FILA {i} · PRUEBA DE ALINEACIÓN",
+            Unidad = "UND",
+            PrecioUnitario = 1234.50m,
+            Total = 1234.50m * i
+        }).ToList();
+        return new Factura
+        {
+            Serie = "A",
+            Fecha = fecha,
+            ClienteNombre = "CLIENTE DE PRUEBA",
+            ClienteDireccion = "DIRECCIÓN DE PRUEBA, MANAGUA",
+            Lineas = lineas,
+            Total = lineas.Sum(l => l.Total)
+        };
+    }
 
     /// <summary>Cuadrícula milimétrica para medir la posición real de cada campo del formulario.</summary>
     private static void Cuadricula(StringBuilder c, PlantillaPreimpresa p)

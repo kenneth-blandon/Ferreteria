@@ -1,4 +1,5 @@
 using Dapper;
+using Facturacion.Core.Configuracion;
 using Microsoft.Data.Sqlite;
 
 namespace Facturacion.Datos;
@@ -11,12 +12,16 @@ public static class Migraciones
 {
     private static readonly Action<SqliteConnection, SqliteTransaction>[] Pasos =
     [
-        Version1
+        Version1,
+        Version2
     ];
 
     public static int VersionActual => Pasos.Length;
 
-    public static void Aplicar(ConexionSqlite db)
+    public static void Aplicar(ConexionSqlite db) => Aplicar(db, VersionActual);
+
+    /// <summary>Aplica los pasos hasta la versión indicada (las pruebas lo usan para simular bases antiguas).</summary>
+    internal static void Aplicar(ConexionSqlite db, int hastaVersion)
     {
         using var conexion = db.Abrir();
         var version = conexion.ExecuteScalar<int>("PRAGMA user_version");
@@ -24,7 +29,7 @@ public static class Migraciones
             throw new InvalidOperationException(
                 $"La base de datos es de una versión más nueva del sistema ({version}). Actualice la aplicación.");
 
-        for (var paso = version; paso < Pasos.Length; paso++)
+        for (var paso = version; paso < hastaVersion; paso++)
         {
             using var transaccion = conexion.BeginTransaction();
             Pasos[paso](conexion, transaccion);
@@ -126,5 +131,56 @@ public static class Migraciones
             """, transaction: tx);
 
         DatosIniciales.Insertar(cn, tx);
+    }
+
+    /// <summary>
+    /// Versión 2: modificación de facturas con constancia, unidades de medida administrables
+    /// e impresión solo en talonario con las posiciones medidas sobre el formulario.
+    /// </summary>
+    private static void Version2(SqliteConnection cn, SqliteTransaction tx)
+    {
+        cn.Execute("""
+            ALTER TABLE Facturas ADD COLUMN fecha_modificacion TEXT;
+
+            CREATE TABLE ModificacionesFactura (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                factura_id       INTEGER NOT NULL REFERENCES Facturas(id) ON DELETE CASCADE,
+                fecha            TEXT NOT NULL,
+                empleado         TEXT NOT NULL,
+                motivo           TEXT NOT NULL,
+                cambios          TEXT NOT NULL,
+                total_anterior   REAL NOT NULL,
+                total_nuevo      REAL NOT NULL,
+                datos_anteriores TEXT NOT NULL
+            );
+            CREATE INDEX IX_Modificaciones_Factura ON ModificacionesFactura(factura_id);
+
+            CREATE TABLE Unidades (
+                id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                nombre TEXT NOT NULL COLLATE NOCASE UNIQUE
+            );
+            """, transaction: tx);
+
+        DatosIniciales.InsertarUnidades(cn, tx);
+        // Las unidades que ya usan los productos se agregan a la lista.
+        cn.Execute("INSERT OR IGNORE INTO Unidades (nombre) SELECT DISTINCT unidad FROM Productos WHERE TRIM(unidad) <> ''",
+            transaction: tx);
+
+        // Se conservan impresora, copias y desplazamientos; las posiciones pasan a las medidas del talonario.
+        var json = cn.ExecuteScalar<string?>("SELECT valor FROM Configuracion WHERE clave = @clave",
+            new { clave = ClavesConfiguracion.Impresion }, tx);
+        var anterior = ServicioConfiguracion.DesdeJson<AjustesImpresion>(json);
+        var nuevos = new AjustesImpresion
+        {
+            Impresora = anterior.Impresora,
+            MostrarDialogo = anterior.MostrarDialogo,
+            Copias = anterior.Copias,
+            DesplazamientoXMm = anterior.DesplazamientoXMm,
+            DesplazamientoYMm = anterior.DesplazamientoYMm
+        };
+        cn.Execute("""
+            INSERT INTO Configuracion (clave, valor) VALUES (@clave, @valor)
+            ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor
+            """, new { clave = ClavesConfiguracion.Impresion, valor = ServicioConfiguracion.ComoJson(nuevos) }, tx);
     }
 }

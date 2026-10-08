@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dapper;
 using Facturacion.Core.Comun;
@@ -13,7 +14,13 @@ public sealed partial class FacturaRepositorio(ConexionSqlite db) : IFacturaRepo
     private const string ColumnasFactura = """
         id, serie, numero, fecha, cliente_id, cliente_nombre, cliente_ruc, cliente_direccion,
         subtotal, iva, total, metodo_pago, monto_recibido, vuelto, referencia,
-        estado, motivo_anulacion, fecha_anulacion
+        estado, motivo_anulacion, fecha_anulacion, fecha_modificacion
+        """;
+
+    private const string InsertarLinea = """
+        INSERT INTO DetalleFactura (factura_id, producto_id, codigo, descripcion, unidad, cantidad, precio_unitario, total)
+        VALUES (@FacturaId, @ProductoId, @Codigo, @Descripcion, @Unidad, @Cantidad, @PrecioUnitario, @Total)
+        RETURNING id
         """;
 
     /// <summary>"40659" o "A-40659": búsqueda por número de factura.</summary>
@@ -66,11 +73,7 @@ public sealed partial class FacturaRepositorio(ConexionSqlite db) : IFacturaRepo
         foreach (var linea in factura.Lineas)
         {
             linea.FacturaId = factura.Id;
-            linea.Id = cn.ExecuteScalar<long>("""
-                INSERT INTO DetalleFactura (factura_id, producto_id, codigo, descripcion, unidad, cantidad, precio_unitario, total)
-                VALUES (@FacturaId, @ProductoId, @Codigo, @Descripcion, @Unidad, @Cantidad, @PrecioUnitario, @Total)
-                RETURNING id
-                """, linea, tx);
+            linea.Id = cn.ExecuteScalar<long>(InsertarLinea, linea, tx);
 
             if (linea.ProductoId is { } productoId)
                 MoverExistencia(cn, tx, productoId, -linea.Cantidad, factura.Fecha, TipoMovimiento.Venta, referencia);
@@ -91,7 +94,144 @@ public sealed partial class FacturaRepositorio(ConexionSqlite db) : IFacturaRepo
             SELECT id, factura_id, producto_id, codigo, descripcion, unidad, cantidad, precio_unitario, total
             FROM DetalleFactura WHERE factura_id = @id ORDER BY id
             """, new { id }).ToList();
+
+        factura.Modificaciones = cn.Query<ModificacionGuardada>("""
+            SELECT id, factura_id, fecha, empleado, motivo, cambios, total_anterior, total_nuevo
+            FROM ModificacionesFactura WHERE factura_id = @id ORDER BY fecha DESC, id DESC
+            """, new { id })
+            .Select(m => new ModificacionFactura
+            {
+                Id = m.Id,
+                FacturaId = m.FacturaId,
+                Fecha = m.Fecha,
+                Empleado = m.Empleado,
+                Motivo = m.Motivo,
+                Cambios = JsonSerializer.Deserialize<List<string>>(m.Cambios) ?? [],
+                TotalAnterior = m.TotalAnterior,
+                TotalNuevo = m.TotalNuevo
+            })
+            .ToList();
         return factura;
+    }
+
+    public Factura Modificar(Factura anterior, Factura nueva, ModificacionFactura modificacion, bool permitirStockNegativo)
+    {
+        using (var cn = db.Abrir())
+        using (var tx = cn.BeginTransaction())
+        {
+            var estado = cn.ExecuteScalar<string?>("SELECT estado FROM Facturas WHERE id = @Id", new { anterior.Id }, tx)
+                ?? throw new NoEncontradoException("La factura no existe.");
+            if (estado != nameof(EstadoFactura.Emitida))
+                throw new ReglaNegocioException($"La factura {anterior.NumeroCompleto} está anulada y no se puede modificar.");
+
+            // Diferencia neta por producto: lo facturado antes regresa al inventario y lo nuevo sale.
+            var cambiosExistencia = new Dictionary<long, decimal>();
+            foreach (var l in anterior.Lineas.Where(l => l.ProductoId.HasValue))
+                cambiosExistencia[l.ProductoId!.Value] = cambiosExistencia.GetValueOrDefault(l.ProductoId!.Value) + l.Cantidad;
+            foreach (var l in nueva.Lineas.Where(l => l.ProductoId.HasValue))
+                cambiosExistencia[l.ProductoId!.Value] = cambiosExistencia.GetValueOrDefault(l.ProductoId!.Value) - l.Cantidad;
+
+            if (!permitirStockNegativo)
+            {
+                foreach (var (productoId, cambio) in cambiosExistencia.Where(c => c.Value < 0))
+                {
+                    var producto = cn.QuerySingleOrDefault<Existencia>(
+                        "SELECT nombre, unidad, stock FROM Productos WHERE id = @productoId", new { productoId }, tx);
+                    if (producto is not null && producto.Stock + cambio < 0)
+                        throw new ReglaNegocioException(
+                            $"Existencia insuficiente de {producto.Nombre}: hay {Dinero.Cantidad(producto.Stock)} {producto.Unidad} " +
+                            $"y la corrección necesita {Dinero.Cantidad(-cambio)} más.");
+                }
+            }
+
+            cn.Execute("""
+                UPDATE Facturas
+                SET cliente_id = @ClienteId, cliente_nombre = @ClienteNombre, cliente_ruc = @ClienteRuc,
+                    cliente_direccion = @ClienteDireccion, subtotal = @Subtotal, iva = @Iva, total = @Total,
+                    metodo_pago = @MetodoPago, monto_recibido = @MontoRecibido, vuelto = @Vuelto,
+                    referencia = @Referencia, fecha_modificacion = @FechaModificacion
+                WHERE id = @Id
+                """,
+                new
+                {
+                    anterior.Id,
+                    nueva.ClienteId,
+                    nueva.ClienteNombre,
+                    nueva.ClienteRuc,
+                    nueva.ClienteDireccion,
+                    nueva.Subtotal,
+                    nueva.Iva,
+                    nueva.Total,
+                    MetodoPago = nueva.MetodoPago.ToString(),
+                    nueva.MontoRecibido,
+                    nueva.Vuelto,
+                    nueva.Referencia,
+                    FechaModificacion = Sql.Fecha(modificacion.Fecha)
+                }, tx);
+
+            cn.Execute("DELETE FROM DetalleFactura WHERE factura_id = @Id", new { anterior.Id }, tx);
+            foreach (var linea in nueva.Lineas)
+            {
+                linea.FacturaId = anterior.Id;
+                linea.Id = cn.ExecuteScalar<long>(InsertarLinea, linea, tx);
+            }
+
+            var referencia = $"Modificación {anterior.NumeroCompleto}";
+            foreach (var (productoId, cambio) in cambiosExistencia.Where(c => c.Value != 0))
+                MoverExistencia(cn, tx, productoId, cambio, modificacion.Fecha, TipoMovimiento.Modificacion, referencia);
+
+            modificacion.Id = cn.ExecuteScalar<long>("""
+                INSERT INTO ModificacionesFactura (factura_id, fecha, empleado, motivo, cambios, total_anterior, total_nuevo, datos_anteriores)
+                VALUES (@FacturaId, @Fecha, @Empleado, @Motivo, @Cambios, @TotalAnterior, @TotalNuevo, @DatosAnteriores)
+                RETURNING id
+                """,
+                new
+                {
+                    FacturaId = anterior.Id,
+                    Fecha = Sql.Fecha(modificacion.Fecha),
+                    modificacion.Empleado,
+                    modificacion.Motivo,
+                    Cambios = JsonSerializer.Serialize(modificacion.Cambios),
+                    modificacion.TotalAnterior,
+                    modificacion.TotalNuevo,
+                    DatosAnteriores = CopiaParaConstancia(anterior)
+                }, tx);
+
+            tx.Commit();
+        }
+        return Obtener(anterior.Id)!;
+    }
+
+    /// <summary>Copia completa de la factura antes del cambio (queda como constancia).</summary>
+    private static string CopiaParaConstancia(Factura f) => JsonSerializer.Serialize(new
+    {
+        f.Serie,
+        f.Numero,
+        f.Fecha,
+        f.ClienteId,
+        f.ClienteNombre,
+        f.ClienteRuc,
+        f.ClienteDireccion,
+        f.Subtotal,
+        f.Iva,
+        f.Total,
+        MetodoPago = f.MetodoPago.ToString(),
+        f.MontoRecibido,
+        f.Vuelto,
+        f.Referencia,
+        Lineas = f.Lineas.Select(l => new { l.ProductoId, l.Codigo, l.Descripcion, l.Unidad, l.Cantidad, l.PrecioUnitario, l.Total })
+    });
+
+    private sealed class ModificacionGuardada
+    {
+        public long Id { get; set; }
+        public long FacturaId { get; set; }
+        public DateTime Fecha { get; set; }
+        public string Empleado { get; set; } = "";
+        public string Motivo { get; set; } = "";
+        public string Cambios { get; set; } = "[]";
+        public decimal TotalAnterior { get; set; }
+        public decimal TotalNuevo { get; set; }
     }
 
     public IReadOnlyList<Factura> Listar(FiltroFacturas filtro)

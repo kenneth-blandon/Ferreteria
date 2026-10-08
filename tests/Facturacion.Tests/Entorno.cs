@@ -37,7 +37,7 @@ public sealed class Entorno : IDisposable
         var clientes = new ClienteRepositorio(Db);
 
         Configuracion = new ServicioConfiguracion(new ConfiguracionRepositorio(Db), Facturas);
-        Catalogo = new ServicioCatalogo(Productos, Categorias, Reloj);
+        Catalogo = new ServicioCatalogo(Productos, Categorias, new UnidadRepositorio(Db), Reloj);
         Clientes = new ServicioClientes(clientes, Reloj);
         Inventario = new ServicioInventario(new InventarioRepositorio(Db), Productos, Reloj);
         Facturacion = new ServicioFacturacion(Facturas, Productos, clientes, Configuracion, Reloj);

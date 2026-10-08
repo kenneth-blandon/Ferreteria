@@ -15,12 +15,11 @@ public sealed class DatosNegocio
     public string Giro { get; set; } = "";
     public string Propietario { get; set; } = "";
     public string Direccion { get; set; } = "";
+    /// <summary>Uno o varios teléfonos de 8 dígitos separados por "/".</summary>
     public string Telefono { get; set; } = "";
     public string Email { get; set; } = "";
     public string Ruc { get; set; } = "";
-    /// <summary>Texto al pie del ticket, ej. "¡Gracias por su compra!".</summary>
-    public string MensajePie { get; set; } = "";
-    /// <summary>Cláusulas impresas en la factura de página completa (una por línea).</summary>
+    /// <summary>Cláusulas del pagaré que se muestran en la vista previa (una por línea).</summary>
     public string Condiciones { get; set; } = "";
 }
 
@@ -45,38 +44,28 @@ public sealed class AjustesFacturacion
     public bool PermitirStockNegativo { get; set; } = true;
 }
 
-public enum FormatoImpresion
-{
-    /// <summary>Página completa (inyección/láser), similar al talonario.</summary>
-    Carta,
-    /// <summary>Rollo de impresora térmica de 80 o 58 mm.</summary>
-    Ticket,
-    /// <summary>Solo los datos variables, alineados sobre el formulario preimpreso (matriz de punto).</summary>
-    Preimpreso
-}
-
-/// <summary>Opciones de impresión.</summary>
+/// <summary>
+/// Impresión sobre el talonario preimpreso (matriz de punto). Solo se imprimen los datos variables;
+/// la vista previa en hoja carta sirve para ver cómo quedará la factura.
+/// </summary>
 public sealed class AjustesImpresion
 {
-    public FormatoImpresion Formato { get; set; } = FormatoImpresion.Carta;
     /// <summary>Nombre de la impresora de Windows. Vacío = impresora predeterminada.</summary>
     public string? Impresora { get; set; }
-    public bool ImprimirAlCobrar { get; set; } = true;
     /// <summary>Muestra el cuadro de impresión en lugar de imprimir directo.</summary>
     public bool MostrarDialogo { get; set; }
     public int Copias { get; set; } = 1;
-    /// <summary>Ancho del rollo térmico: 80 o 58 mm.</summary>
-    public int AnchoTicketMm { get; set; } = 80;
-    /// <summary>Calibración fina del formato preimpreso (mm, puede ser negativo).</summary>
+    /// <summary>Calibración fina de todo el formato (mm, puede ser negativo).</summary>
     public decimal DesplazamientoXMm { get; set; }
     public decimal DesplazamientoYMm { get; set; }
     public PlantillaPreimpresa Plantilla { get; set; } = new();
 }
 
 /// <summary>
-/// Posiciones (en milímetros desde la esquina superior izquierda) de cada dato
-/// sobre el formulario preimpreso. Valores iniciales estimados para una hoja carta;
-/// se ajustan con la página de calibración.
+/// Posición de cada dato sobre el formulario preimpreso, en milímetros desde la esquina superior
+/// izquierda de la hoja (216 × 279 mm). Cada campo es una caja: el texto se centra verticalmente.
+/// Valores medidos sobre la foto del talonario "Electric Hammer" corrigiendo la perspectiva
+/// (22 filas de 6.16 mm); se afinan con la hoja de calibración.
 /// </summary>
 public sealed class PlantillaPreimpresa
 {
@@ -84,28 +73,32 @@ public sealed class PlantillaPreimpresa
     public decimal AltoPaginaMm { get; set; } = 279;
     public decimal TamanoFuentePt { get; set; } = 10;
 
-    public Posicion Dia { get; set; } = new(15, 37, 10);
-    public Posicion Mes { get; set; } = new(27, 37, 10);
-    public Posicion Anio { get; set; } = new(38, 37, 13);
-    public Posicion Cliente { get; set; } = new(30, 47, 170);
-    public Posicion Direccion { get; set; } = new(34, 53, 166);
+    /// <summary>Casillas DIA / MES / AÑO (fila de valores bajo los títulos).</summary>
+    public Posicion Dia { get; set; } = new(8.8m, 42.1m, 11.3m, 7.6m);
+    public Posicion Mes { get; set; } = new(20.1m, 42.1m, 12.5m, 7.6m);
+    public Posicion Anio { get; set; } = new(32.6m, 42.1m, 11.8m, 7.6m);
+    /// <summary>Franjas justo encima de las líneas de CLIENTE y DIRECCIÓN.</summary>
+    public Posicion Cliente { get; set; } = new(25.5m, 53.2m, 179.6m, 5m);
+    public Posicion Direccion { get; set; } = new(30.3m, 60m, 174.8m, 5m);
 
     public FilasPlantilla Filas { get; set; } = new();
-    public Columna Cantidad { get; set; } = new(11, 17);
-    public Columna Descripcion { get; set; } = new(31, 122);
-    public Columna PrecioUnitario { get; set; } = new(155, 25);
-    public Columna Importe { get; set; } = new(182, 25);
+    public Columna Cantidad { get; set; } = new(9m, 17.6m);
+    public Columna Descripcion { get; set; } = new(28.5m, 121.4m);
+    public Columna PrecioUnitario { get; set; } = new(151.7m, 25.3m);
+    public Columna Importe { get; set; } = new(178.6m, 26.7m);
 
-    public Posicion Total { get; set; } = new(182, 214, 25);
+    /// <summary>Casilla del TOTAL (última fila de la tabla, columna TOTAL).</summary>
+    public Posicion Total { get; set; } = new(178.6m, 209.9m, 26.7m, 6m);
 }
 
 public sealed class Posicion
 {
     public Posicion() { }
-    public Posicion(decimal x, decimal y, decimal ancho) => (X, Y, Ancho) = (x, y, ancho);
+    public Posicion(decimal x, decimal y, decimal ancho, decimal alto) => (X, Y, Ancho, Alto) = (x, y, ancho, alto);
     public decimal X { get; set; }
     public decimal Y { get; set; }
     public decimal Ancho { get; set; }
+    public decimal Alto { get; set; }
 }
 
 public sealed class Columna
@@ -118,9 +111,9 @@ public sealed class Columna
 
 public sealed class FilasPlantilla
 {
-    /// <summary>Posición vertical de la primera fila de productos.</summary>
-    public decimal Y { get; set; } = 67;
-    public decimal Alto { get; set; } = 6.6m;
-    /// <summary>Líneas disponibles en el formulario.</summary>
-    public int Maximo { get; set; } = 20;
+    /// <summary>Borde superior de la primera fila de productos.</summary>
+    public decimal Y { get; set; } = 74.3m;
+    public decimal Alto { get; set; } = 6.16m;
+    /// <summary>Filas de productos del formulario (sin contar la del TOTAL).</summary>
+    public int Maximo { get; set; } = 22;
 }

@@ -1,25 +1,30 @@
 // Pantalla de facturación rápida (mostrador).
-// Flujo con teclado: F1 buscar → Enter agrega → escribir cantidad → Enter vuelve al buscador → F10 cobrar.
+// Flujo con teclado: F1 buscar → Enter agrega → escribir cantidad → Enter vuelve al buscador → F10 generar.
+// Después de generar, se indica qué formulario del talonario colocar en la impresora y se imprime.
+// También sirve para MODIFICAR una factura emitida (desde Historial): se cargan sus datos y al guardar
+// se piden el motivo y el nombre del empleado.
 import { api, conParametros } from '../api.js';
 import {
   $, $$, h, dinero, numero2, cantidad as formatoCantidad, valorEntrada, aNumero, redondear, debounce,
   aviso, confirmar, abrirModal, leerLocal, guardarLocal
 } from '../ui.js';
 import { obtenerConfiguracion } from '../config.js';
-import { imprimir, guardarPdf, rutaFactura, vistaPrevia, esEscritorio } from '../impresion.js';
+import { guardarPdf, rutaFactura, rutaVista, vistaPrevia, dialogoImprimir, imprimir, esEscritorio } from '../impresion.js';
+import { documento, validarAlSalir } from '../validacion.js';
 import { actualizarAlertas } from '../app.js';
 
 const CLAVE_ESTADO = 'facturacion.facturaEnCurso';
+const CLAVE_MODIFICACION = 'facturacion.modificacionEnCurso';
 const CLAVE_ULTIMA = 'facturacion.ultimaFactura';
 const CONSUMIDOR_FINAL = 'CONSUMIDOR FINAL';
 const METODOS = ['Efectivo', 'Tarjeta', 'Transferencia'];
-const FORMATOS = { Carta: 'Hoja carta (completa)', Ticket: 'Ticket (térmica)', Preimpreso: 'Talonario preimpreso' };
-const UNIDADES = ['UND', 'MTS', 'PIE', 'LBS', 'KG', 'GLN', 'LTS', 'ROLLO', 'CAJA', 'BOLSA', 'PAR', 'JGO', 'QQ'];
 
 let raiz;
 let config;
 let estado;
 let ultima;
+let unidades = [];
+let proximo = null;
 let resultados = [];
 let textoResultados = '';
 let indice = -1;
@@ -27,16 +32,35 @@ let turnoBusqueda = 0;
 let clientes = [];
 let indiceCliente = -1;
 let cobrando = false;
+let revisarRuc = () => true;
 // Búsquedas por Enter que aún esperan respuesta: cobrar espera a que terminen.
 const pendientes = new Set();
 
+const modificando = () => estado.modo === 'modificar';
+const maximoLineas = () => config.impresion.plantilla.filas.maximo;
+
 // ---------- Montaje ----------
 
-export async function montar(contenedor) {
+export async function montar(contenedor, parametros) {
   raiz = contenedor;
   config = await obtenerConfiguracion(true);
-  estado = cargarEstado();
   ultima = leerLocal(CLAVE_ULTIMA);
+  unidades = await api.get('/api/unidades').then((lista) => lista.map((u) => u.nombre)).catch(() => ['UND']);
+
+  const idModificar = Number(parametros.get('modificar'));
+  if (idModificar) {
+    // La dirección vuelve a #/facturar: si se recarga la página se sigue con la modificación guardada.
+    history.replaceState(null, '', '#/facturar');
+    const enCurso = leerLocal(CLAVE_MODIFICACION);
+    if (enCurso?.facturaId !== idModificar) {
+      try {
+        guardarLocal(CLAVE_MODIFICACION, await cargarParaModificar(idModificar));
+      } catch (error) {
+        aviso(error.message, 'error', 7000);
+      }
+    }
+  }
+  estado = cargarEstado();
 
   raiz.innerHTML = plantilla();
   enlazarEventos();
@@ -66,7 +90,7 @@ function plantilla() {
     <div class="pos-izq">
       <div class="pos-titulo">
         <div>
-          <h1>Factura <span id="numFactura" class="chip chip-azul">…</span></h1>
+          <h1><span id="tituloFactura">Factura</span> <span id="numFactura" class="chip chip-azul">…</span></h1>
           <div id="avisoNumeracion" class="aviso-texto" hidden></div>
         </div>
         <div class="acciones">
@@ -74,6 +98,8 @@ function plantilla() {
           <button type="button" class="btn" id="btnLimpiar">Limpiar <kbd>Esc</kbd></button>
         </div>
       </div>
+
+      <div class="aviso-caja banda-modificacion" id="bandaModificacion" hidden></div>
 
       <div class="tarjeta pos-cliente">
         <div class="campo crece">
@@ -83,7 +109,8 @@ function plantilla() {
             <div class="sugerencias" id="cliSugerencias" hidden></div>
           </div>
         </div>
-        <div class="campo"><label for="cliRuc">RUC / Cédula</label><input id="cliRuc" autocomplete="off" spellcheck="false"></div>
+        <div class="campo"><label for="cliRuc">RUC / Cédula</label>
+          <input id="cliRuc" autocomplete="off" spellcheck="false" placeholder="000-000000-0000A"></div>
         <div class="campo crece"><label for="cliDireccion">Dirección</label><input id="cliDireccion" autocomplete="off"></div>
         <div class="campo-fin">
           <label class="check" id="cajaGuardar" hidden><input type="checkbox" id="cliGuardar"> Guardar cliente</label>
@@ -139,14 +166,8 @@ function plantilla() {
         <input id="referencia" autocomplete="off" spellcheck="false">
       </div>
 
-      <div class="bloque">
-        <label for="formato">Imprimir en</label>
-        <select id="formato">
-          ${Object.entries(FORMATOS).map(([valor, texto]) => h`<option value="${valor}">${texto}</option>`)}
-        </select>
-      </div>
-
-      <button type="button" class="btn btn-exito btn-cobrar" id="btnCobrar">Cobrar e imprimir <kbd>F10</kbd></button>
+      <button type="button" class="btn btn-exito btn-cobrar" id="btnCobrar"></button>
+      <div class="sub-info-claro" id="infoTalonario"></div>
       <div class="ultima" id="ultima" hidden></div>
     </aside>
   </section>`;
@@ -154,19 +175,18 @@ function plantilla() {
 
 // ---------- Estado (se guarda localmente: no se pierde si se cierra la ventana) ----------
 
-function estadoVacio(formato) {
+function estadoVacio() {
   return {
+    modo: 'nueva',
     cliente: { id: null, nombre: '', ruc: '', direccion: '', guardar: false },
     lineas: [],
     metodoPago: 'Efectivo',
     recibido: '',
-    referencia: '',
-    formato: formato || config.impresion.formato
+    referencia: ''
   };
 }
 
-function cargarEstado() {
-  const guardado = leerLocal(CLAVE_ESTADO);
+function normalizarEstado(guardado) {
   const base = estadoVacio();
   if (!guardado || !Array.isArray(guardado.lineas)) return base;
   return {
@@ -175,17 +195,64 @@ function cargarEstado() {
     recibido: String(guardado.recibido ?? ''),
     referencia: String(guardado.referencia ?? ''),
     cliente: { ...base.cliente, ...guardado.cliente },
-    metodoPago: METODOS.includes(guardado.metodoPago) ? guardado.metodoPago : 'Efectivo',
-    formato: FORMATOS[guardado.formato] ? guardado.formato : base.formato
+    metodoPago: METODOS.includes(guardado.metodoPago) ? guardado.metodoPago : 'Efectivo'
   };
 }
 
-const guardarEstado = () => guardarLocal(CLAVE_ESTADO, estado);
+/** Una modificación en curso tiene prioridad sobre la factura nueva que se estaba armando. */
+function cargarEstado() {
+  const modificacion = leerLocal(CLAVE_MODIFICACION);
+  if (modificacion?.modo === 'modificar') return normalizarEstado(modificacion);
+  return normalizarEstado(leerLocal(CLAVE_ESTADO));
+}
+
+const guardarEstado = () => guardarLocal(modificando() ? CLAVE_MODIFICACION : CLAVE_ESTADO, estado);
 const enfocar = (selector) => {
   const elemento = $(selector, raiz);
   elemento?.focus();
   elemento?.select?.();
 };
+
+/** Arma el estado de edición a partir de una factura emitida. */
+async function cargarParaModificar(id) {
+  const f = await api.get(`/api/facturas/${id}`);
+  if (f.estado === 'Anulada') throw new Error(`La factura ${f.numeroCompleto} está anulada y no se puede modificar.`);
+
+  // Lo ya facturado vuelve al inventario al corregir: cuenta como disponible.
+  const facturado = {};
+  for (const l of f.lineas) if (l.productoId) facturado[l.productoId] = (facturado[l.productoId] || 0) + l.cantidad;
+  const existencias = {};
+  await Promise.all(Object.keys(facturado).map(async (pid) => {
+    existencias[pid] = await api.get(`/api/productos/${pid}`).then((p) => p.stock).catch(() => 0);
+  }));
+
+  return {
+    modo: 'modificar',
+    facturaId: f.id,
+    numero: f.numero,
+    numeroCompleto: f.numeroCompleto,
+    facturado,
+    cliente: {
+      id: f.clienteId,
+      nombre: f.clienteNombre === CONSUMIDOR_FINAL ? '' : f.clienteNombre,
+      ruc: f.clienteRuc || '',
+      direccion: f.clienteDireccion || '',
+      guardar: false
+    },
+    lineas: f.lineas.map((l) => ({
+      productoId: l.productoId,
+      codigo: l.codigo,
+      descripcion: l.descripcion,
+      unidad: l.unidad,
+      cantidad: l.cantidad,
+      precio: l.precioUnitario,
+      stock: l.productoId ? (existencias[l.productoId] ?? 0) + facturado[l.productoId] : null
+    })),
+    metodoPago: f.metodoPago,
+    recibido: f.metodoPago === 'Efectivo' && f.montoRecibido ? valorEntrada(f.montoRecibido) : '',
+    referencia: f.referencia || ''
+  };
+}
 
 // ---------- Eventos ----------
 
@@ -195,8 +262,7 @@ function enlazarEventos() {
   busqueda.addEventListener('keydown', teclaBusqueda);
   busqueda.addEventListener('blur', () => setTimeout(cerrarResultados, 150));
 
-  const listaResultados = $('#resultados', raiz);
-  listaResultados.addEventListener('mousedown', (e) => {
+  $('#resultados', raiz).addEventListener('mousedown', (e) => {
     const item = e.target.closest('[data-i]');
     if (!item) return;
     e.preventDefault();
@@ -243,6 +309,7 @@ function enlazarEventos() {
     seleccionarCliente(clientes[Number(item.dataset.i)]);
   });
   $('#cliRuc', raiz).addEventListener('input', (e) => { estado.cliente.ruc = e.target.value; guardarEstado(); });
+  revisarRuc = validarAlSalir($('#cliRuc', raiz), documento);
   $('#cliDireccion', raiz).addEventListener('input', (e) => { estado.cliente.direccion = e.target.value; guardarEstado(); });
   $('#cliGuardar', raiz).addEventListener('change', (e) => { estado.cliente.guardar = e.target.checked; guardarEstado(); });
   for (const id of ['#cliRuc', '#cliDireccion']) {
@@ -274,12 +341,14 @@ function enlazarEventos() {
     pintarVuelto();
   });
   $('#referencia', raiz).addEventListener('input', (e) => { estado.referencia = e.target.value; guardarEstado(); });
-  $('#formato', raiz).addEventListener('change', (e) => { estado.formato = e.target.value; guardarEstado(); });
 
   $('#btnCobrar', raiz).addEventListener('click', cobrar);
   $('#btnLimpiar', raiz).addEventListener('click', limpiar);
   $('#btnLibre', raiz).addEventListener('click', articuloLibre);
   $('#ultima', raiz).addEventListener('click', accionUltima);
+  $('#bandaModificacion', raiz).addEventListener('click', (e) => {
+    if (e.target.closest('[data-cancelar]')) limpiar();
+  });
 }
 
 // ---------- Búsqueda de productos ----------
@@ -323,7 +392,7 @@ function pintarResultados(texto) {
           <div class="sug-principal"><span class="mono">${p.codigo}</span><span>${p.nombre}</span></div>
           <div class="sug-detalle">
             <span>${p.categoria || 'Sin categoría'}</span>
-            <span class="${claseStock(p)}">Stock: ${formatoCantidad(p.stock)} ${p.unidad}</span>
+            <span class="${claseStock(p)}">Stock: ${formatoCantidad(disponible(p))} ${p.unidad}</span>
             <b>${dinero(p.precio)}</b>
           </div>
         </div>`)}`
@@ -331,8 +400,11 @@ function pintarResultados(texto) {
   lista.hidden = false;
 }
 
+/** Existencia disponible; al modificar, lo ya facturado en esta factura también cuenta. */
+const disponible = (producto) => producto.stock + (modificando() ? estado.facturado?.[producto.id] || 0 : 0);
+
 function claseStock(p) {
-  if (p.stock <= 0) return 'stock-agotado';
+  if (disponible(p) <= 0) return 'stock-agotado';
   return p.bajoStock ? 'stock-bajo' : '';
 }
 
@@ -348,7 +420,7 @@ function cerrarResultados() {
   $('#resultados', raiz).hidden = true;
 }
 
-async function teclaBusqueda(e) {
+function teclaBusqueda(e) {
   const abierta = !$('#resultados', raiz).hidden && resultados.length > 0;
   if (e.key === 'ArrowDown' && abierta) {
     e.preventDefault();
@@ -424,16 +496,22 @@ function agregarProducto(producto, cantidad, enfocarCantidad, vaciarBusqueda = t
   if (!producto || !raiz.isConnected) return;
   let i = estado.lineas.findIndex((l) => l.productoId === producto.id);
   const nuevaCantidad = redondear((i >= 0 ? Number(estado.lineas[i].cantidad) : 0) + cantidad, 3);
+  const existencia = disponible(producto);
 
-  if (!config.facturacion.permitirStockNegativo && nuevaCantidad > producto.stock) {
-    aviso(`Existencia insuficiente de ${producto.nombre}: hay ${formatoCantidad(producto.stock)} ${producto.unidad}.`, 'error', 6000);
+  if (!config.facturacion.permitirStockNegativo && nuevaCantidad > existencia) {
+    aviso(`Existencia insuficiente de ${producto.nombre}: hay ${formatoCantidad(existencia)} ${producto.unidad}.`, 'error', 6000);
+    limpiarBusqueda(vaciarBusqueda);
+    return;
+  }
+  if (i < 0 && estado.lineas.length >= maximoLineas()) {
+    aviso(`El talonario tiene ${maximoLineas()} líneas. Genere esta factura y continúe en otra.`, 'error', 7000);
     limpiarBusqueda(vaciarBusqueda);
     return;
   }
 
   if (i >= 0) {
     estado.lineas[i].cantidad = nuevaCantidad;
-    estado.lineas[i].stock = producto.stock;
+    estado.lineas[i].stock = existencia;
   } else {
     estado.lineas.push({
       productoId: producto.id,
@@ -442,12 +520,12 @@ function agregarProducto(producto, cantidad, enfocarCantidad, vaciarBusqueda = t
       unidad: producto.unidad,
       cantidad: nuevaCantidad,
       precio: producto.precio,
-      stock: producto.stock
+      stock: existencia
     });
     i = estado.lineas.length - 1;
   }
-  if (nuevaCantidad > producto.stock) {
-    aviso(`Atención: el sistema registra ${formatoCantidad(producto.stock)} ${producto.unidad} de ${producto.nombre}.`, 'aviso', 5000);
+  if (nuevaCantidad > existencia) {
+    aviso(`Atención: el sistema registra ${formatoCantidad(existencia)} ${producto.unidad} de ${producto.nombre}.`, 'aviso', 5000);
   }
 
   limpiarBusqueda(vaciarBusqueda);
@@ -480,21 +558,20 @@ function editarCelda(entrada, normalizar) {
   pintarTotales();
   if (normalizar) {
     entrada.value = valorEntrada(linea[campo], campo === 'cantidad' ? 3 : 2);
-    const etiqueta = $('.etiqueta-linea.aviso', fila);
+    const etiqueta = $('.etiqueta-linea.alerta', fila);
     if (etiqueta) etiqueta.hidden = !(linea.productoId && linea.cantidad > linea.stock);
   }
 }
 
 function pintarLineas(resaltar = -1) {
-  const cuerpo = $('#lineas', raiz);
-  cuerpo.innerHTML = h`${estado.lineas.map((l, i) => h`
+  $('#lineas', raiz).innerHTML = h`${estado.lineas.map((l, i) => h`
     <tr data-i="${i}" class="${i === resaltar ? 'resaltada' : ''}">
       <td class="col-n">${i + 1}</td>
       <td class="mono">${l.codigo || '—'}</td>
       <td>
         <span class="desc-linea">${l.descripcion}</span>
         ${l.productoId
-          ? h`<span class="etiqueta-linea aviso" ${l.cantidad > l.stock ? '' : h`hidden`}>Stock: ${formatoCantidad(l.stock)}</span>`
+          ? h`<span class="etiqueta-linea alerta" ${l.cantidad > l.stock ? '' : h`hidden`}>Stock: ${formatoCantidad(l.stock)}</span>`
           : h`<span class="etiqueta-linea libre">Libre</span>`}
       </td>
       <td class="num"><input class="input-celda num" data-campo="cantidad" inputmode="decimal" value="${valorEntrada(l.cantidad, 3)}"></td>
@@ -531,9 +608,10 @@ function pintarTotales() {
   $('#tIva', raiz).textContent = dinero(iva);
   $('#tTotal', raiz).textContent = dinero(total);
 
-  const unidades = estado.lineas.reduce((s, l) => s + (Number(l.cantidad) || 0), 0);
-  $('#infoLineas', raiz).textContent = estado.lineas.length
-    ? `${estado.lineas.length} ${estado.lineas.length === 1 ? 'línea' : 'líneas'} · ${formatoCantidad(unidades)} unidades`
+  const n = estado.lineas.length;
+  const unidadesTotales = estado.lineas.reduce((s, l) => s + (Number(l.cantidad) || 0), 0);
+  $('#infoLineas', raiz).textContent = n
+    ? `${n} de ${maximoLineas()} líneas del talonario · ${formatoCantidad(unidadesTotales)} unidades`
     : 'Sin productos';
 
   $('#billetes', raiz).innerHTML = h`${sugerenciasEfectivo(total).map((monto, i) =>
@@ -581,7 +659,6 @@ function pintarPago() {
   $('#bloqueReferencia', raiz).hidden = efectivo;
   $('#recibido', raiz).value = estado.recibido;
   $('#referencia', raiz).value = estado.referencia;
-  $('#formato', raiz).value = estado.formato;
 }
 
 // ---------- Cliente ----------
@@ -589,6 +666,7 @@ function pintarPago() {
 function pintarCliente() {
   $('#cliNombre', raiz).value = estado.cliente.nombre;
   $('#cliRuc', raiz).value = estado.cliente.ruc;
+  $('#cliRuc', raiz).classList.remove('invalido');
   $('#cliDireccion', raiz).value = estado.cliente.direccion;
   $('#cliGuardar', raiz).checked = estado.cliente.guardar;
   pintarGuardarCliente();
@@ -657,9 +735,10 @@ function cerrarClientes() {
   $('#cliSugerencias', raiz).hidden = true;
 }
 
-// ---------- Acciones ----------
+// ---------- Pantalla ----------
 
 function pintarTodo() {
+  pintarModo();
   pintarCliente();
   pintarLineas();
   pintarPago();
@@ -667,25 +746,66 @@ function pintarTodo() {
   pintarUltima();
 }
 
+function pintarModo() {
+  const editando = modificando();
+  $('#tituloFactura', raiz).textContent = editando ? 'Modificando factura' : 'Factura';
+  $('#btnLimpiar', raiz).innerHTML = h`${editando ? 'Cancelar modificación' : 'Limpiar'} <kbd>Esc</kbd>`;
+  $('#btnCobrar', raiz).innerHTML = h`${editando ? 'Guardar cambios' : 'Generar factura'} <kbd>F10</kbd>`;
+  const banda = $('#bandaModificacion', raiz);
+  banda.hidden = !editando;
+  if (editando) {
+    banda.innerHTML = h`<span>Está corrigiendo la factura <b>${estado.numeroCompleto}</b>, ya emitida. Al guardar se mostrarán
+      los cambios y se pedirán el motivo y el nombre del empleado.</span>
+      <button type="button" class="btn btn-sm" data-cancelar>Cancelar modificación</button>`;
+    $('#numFactura', raiz).textContent = estado.numeroCompleto;
+    $('#avisoNumeracion', raiz).hidden = true;
+  }
+  pintarInfoTalonario();
+}
+
+function pintarInfoTalonario() {
+  const numero = modificando() ? estado.numero : proximo?.numero;
+  $('#infoTalonario', raiz).textContent = numero ? `Se imprime en el formulario No. ${numero} del talonario` : '';
+}
+
 async function actualizarNumero() {
+  if (modificando()) return;
   try {
-    const proximo = await api.get('/api/facturas/proximo-numero');
-    if (!raiz.isConnected) return;
+    proximo = await api.get('/api/facturas/proximo-numero');
+    if (!raiz.isConnected || modificando()) return;
     $('#numFactura', raiz).textContent = `Serie ${proximo.serie} · No. ${proximo.numero}`;
     const caja = $('#avisoNumeracion', raiz);
     caja.hidden = !proximo.advertencia;
     caja.textContent = proximo.advertencia || '';
+    pintarInfoTalonario();
   } catch {
     $('#numFactura', raiz).textContent = 'Sin numeración';
   }
 }
 
+/** Vuelve a la factura nueva que se estaba armando antes de modificar. */
+function terminarModificacion() {
+  guardarLocal(CLAVE_MODIFICACION, null);
+  estado = normalizarEstado(leerLocal(CLAVE_ESTADO));
+  limpiarBusqueda();
+  pintarTodo();
+  actualizarNumero();
+  enfocar('#busqueda');
+}
+
 async function limpiar() {
+  if (modificando()) {
+    if (await confirmar(`¿Cancelar la modificación de la factura ${estado.numeroCompleto}? Los cambios no se guardan.`,
+      { titulo: 'Cancelar modificación', textoSi: 'Sí, cancelar', peligro: true })) {
+      terminarModificacion();
+    }
+    return;
+  }
   const hayDatos = estado.lineas.length > 0 || estado.cliente.nombre.trim();
   if (hayDatos && !(await confirmar('¿Borrar la factura en curso?', { titulo: 'Limpiar factura', textoSi: 'Borrar', peligro: true }))) {
     return;
   }
-  estado = estadoVacio(estado.formato);
+  estado = estadoVacio();
   guardarEstado();
   limpiarBusqueda();
   pintarTodo();
@@ -693,14 +813,18 @@ async function limpiar() {
 }
 
 function articuloLibre() {
+  if (estado.lineas.length >= maximoLineas()) {
+    aviso(`El talonario tiene ${maximoLineas()} líneas.`, 'error');
+    return;
+  }
   abrirModal({
     titulo: 'Artículo libre (no registrado en el catálogo)',
     cuerpo: h`
       <div class="rejilla">
         <div class="campo completo"><label>Descripción</label><input id="libreDescripcion" maxlength="200" autocomplete="off"></div>
         <div class="campo"><label>Cantidad</label><input id="libreCantidad" class="num" inputmode="decimal" value="1"></div>
-        <div class="campo"><label>Unidad</label><input id="libreUnidad" list="listaUnidades" value="UND" maxlength="12">
-          <datalist id="listaUnidades">${UNIDADES.map((u) => h`<option value="${u}">`)}</datalist></div>
+        <div class="campo"><label>Unidad</label>
+          <select id="libreUnidad">${unidades.map((u) => h`<option value="${u}">${u}</option>`)}</select></div>
         <div class="campo"><label>Precio unitario</label><input id="librePrecio" class="num" inputmode="decimal" placeholder="0.00"></div>
       </div>
       <p class="muy-suave" style="margin:10px 0 0">No descuenta existencias. Para venderlo seguido, regístrelo en Productos.</p>`,
@@ -719,7 +843,7 @@ function articuloLibre() {
             productoId: null,
             codigo: '',
             descripcion: descripcion.toUpperCase(),
-            unidad: ($('#libreUnidad', modal.cuerpo).value.trim() || 'UND').toUpperCase(),
+            unidad: $('#libreUnidad', modal.cuerpo).value || 'UND',
             cantidad: redondear(cantidad, 3),
             precio: redondear(precio),
             stock: null
@@ -734,68 +858,81 @@ function articuloLibre() {
   });
 }
 
-async function cobrar() {
-  if (cobrando) return;
-  // Un producto escaneado justo antes de F10 debe entrar en la factura.
-  if (pendientes.size) await Promise.allSettled([...pendientes]);
+// ---------- Generar / guardar cambios ----------
+
+/** Validaciones comunes antes de generar o de guardar una modificación. */
+function validarAntesDeGuardar() {
   if (!estado.lineas.length) {
     aviso('Agregue al menos un producto.', 'aviso');
     enfocar('#busqueda');
-    return;
+    return null;
   }
   const invalida = estado.lineas.findIndex((l) => !(l.cantidad > 0) || !(l.precio >= 0));
-  if (invalida >= 0) { aviso(`Revise la cantidad o el precio de la línea ${invalida + 1}.`, 'error'); return; }
-
+  if (invalida >= 0) { aviso(`Revise la cantidad o el precio de la línea ${invalida + 1}.`, 'error'); return null; }
+  if (estado.lineas.length > maximoLineas()) {
+    aviso(`El talonario tiene ${maximoLineas()} líneas. Divida la venta en dos facturas.`, 'error', 7000);
+    return null;
+  }
+  if (!revisarRuc()) {
+    aviso('Corrija el RUC o la cédula del cliente (o déjelo vacío).', 'error', 6000);
+    enfocar('#cliRuc');
+    return null;
+  }
   const { total } = calcularTotales();
   const efectivo = estado.metodoPago === 'Efectivo';
   const recibido = estado.recibido.trim() === '' ? total : aNumero(estado.recibido);
   if (efectivo && !(recibido >= total)) {
     aviso('El efectivo recibido es menor al total.', 'error');
     enfocar('#recibido');
-    return;
+    return null;
   }
-  const maximoPreimpreso = config.impresion.plantilla.filas.maximo;
-  if (estado.formato === 'Preimpreso' && estado.lineas.length > maximoPreimpreso) {
-    aviso(`El talonario preimpreso tiene ${maximoPreimpreso} líneas. Divida la venta en dos facturas o use hoja carta.`, 'error', 7000);
-    return;
-  }
+  return { total, recibido: efectivo ? recibido : null };
+}
 
-  if (!(await confirmarCobro(total, efectivo ? recibido : null))) return;
+function solicitud(recibido) {
+  return {
+    cliente: {
+      id: estado.cliente.id,
+      nombre: estado.cliente.nombre,
+      ruc: estado.cliente.ruc,
+      direccion: estado.cliente.direccion,
+      guardar: estado.cliente.guardar
+    },
+    lineas: estado.lineas.map((l) => ({
+      productoId: l.productoId,
+      descripcion: l.descripcion,
+      unidad: l.unidad,
+      cantidad: l.cantidad,
+      precio: l.precio
+    })),
+    metodoPago: estado.metodoPago,
+    montoRecibido: recibido,
+    referencia: estado.referencia
+  };
+}
+
+async function cobrar() {
+  if (cobrando) return;
+  // Un producto escaneado justo antes de F10 debe entrar en la factura.
+  if (pendientes.size) await Promise.allSettled([...pendientes]);
+  if (modificando()) return guardarModificacion();
+
+  const datos = validarAntesDeGuardar();
+  if (!datos) return;
+  if (!(await confirmarCobro(datos.total, datos.recibido))) return;
 
   cobrando = true;
   $('#btnCobrar', raiz).disabled = true;
   try {
-    const factura = await api.post('/api/facturas', {
-      cliente: {
-        id: estado.cliente.id,
-        nombre: estado.cliente.nombre,
-        ruc: estado.cliente.ruc,
-        direccion: estado.cliente.direccion,
-        guardar: estado.cliente.guardar
-      },
-      lineas: estado.lineas.map((l) => ({
-        productoId: l.productoId,
-        descripcion: l.descripcion,
-        unidad: l.unidad,
-        cantidad: l.cantidad,
-        precio: l.precio
-      })),
-      metodoPago: estado.metodoPago,
-      montoRecibido: efectivo ? recibido : null,
-      referencia: estado.referencia
-    });
-
-    const formato = estado.formato;
-    ultima = { id: factura.id, numero: factura.numeroCompleto, total: factura.total, vuelto: factura.vuelto, formato };
-    guardarLocal(CLAVE_ULTIMA, ultima);
-    estado = estadoVacio(formato);
+    const factura = await api.post('/api/facturas', solicitud(datos.recibido));
+    registrarUltima(factura);
+    estado = estadoVacio();
     guardarEstado();
     pintarTodo();
     actualizarNumero();
     actualizarAlertas();
-    aviso(`Factura ${factura.numeroCompleto} emitida.${factura.vuelto ? ` Vuelto: ${dinero(factura.vuelto)}` : ''}`, 'ok', 6000);
-
-    if (config.impresion.imprimirAlCobrar) await imprimirFactura(factura.id, formato, false);
+    aviso(`Factura ${factura.numeroCompleto} generada.`, 'ok', 5000);
+    await dialogoImprimir(factura);
   } catch (error) {
     aviso(error.message, 'error', 8000);
   } finally {
@@ -807,12 +944,87 @@ async function cobrar() {
   }
 }
 
+async function guardarModificacion() {
+  const datos = validarAntesDeGuardar();
+  if (!datos) return;
+  const cuerpo = solicitud(datos.recibido);
+
+  cobrando = true;
+  $('#btnCobrar', raiz).disabled = true;
+  try {
+    const { cambios } = await api.post(`/api/facturas/${estado.facturaId}/cambios`, cuerpo);
+    if (!cambios.length) {
+      if (await confirmar('No se realizaron cambios en la factura. ¿Salir de la modificación?',
+        { titulo: 'Sin cambios', textoSi: 'Salir' })) {
+        terminarModificacion();
+      }
+      return;
+    }
+
+    const notas = await pedirNotasModificacion(cambios);
+    if (!notas) return;
+
+    const factura = await api.put(`/api/facturas/${estado.facturaId}`, { ...cuerpo, ...notas });
+    registrarUltima(factura);
+    terminarModificacion();
+    actualizarAlertas();
+    aviso(`Factura ${factura.numeroCompleto} modificada.`, 'ok', 5000);
+    await dialogoImprimir(factura, { titulo: `Imprimir factura modificada ${factura.numeroCompleto}` });
+  } catch (error) {
+    aviso(error.message, 'error', 8000);
+  } finally {
+    cobrando = false;
+    if (raiz.isConnected) {
+      $('#btnCobrar', raiz).disabled = false;
+      enfocar('#busqueda');
+    }
+  }
+}
+
+/** Muestra los cambios detectados y pide las notas obligatorias. Devuelve { motivo, empleado } o null. */
+function pedirNotasModificacion(cambios) {
+  return new Promise((resolver) => {
+    let notas = null;
+    abrirModal({
+      titulo: `Confirmar modificación de ${estado.numeroCompleto}`,
+      cuerpo: h`
+        <p style="margin-top:0">Cambios detectados:</p>
+        <ul class="lista-cambios">${cambios.map((c) => h`<li>${c}</li>`)}</ul>
+        <div class="campo"><label for="motivoModificacion">Motivo de la modificación *</label>
+          <textarea id="motivoModificacion" rows="3" maxlength="300" placeholder="Explique por qué se corrige la factura"></textarea></div>
+        <div class="campo" style="margin-top:10px"><label for="empleadoModificacion">Nombre del empleado que modifica *</label>
+          <input id="empleadoModificacion" maxlength="80" autocomplete="off"></div>`,
+      botones: [
+        { texto: 'Volver' },
+        {
+          texto: 'Confirmar modificación', clase: 'btn-primario', primario: true,
+          accion: (modal) => {
+            const motivo = $('#motivoModificacion', modal.cuerpo);
+            const empleado = $('#empleadoModificacion', modal.cuerpo);
+            const faltaMotivo = motivo.value.trim().length < 5;
+            const faltaEmpleado = empleado.value.trim().length < 3;
+            motivo.classList.toggle('invalido', faltaMotivo);
+            empleado.classList.toggle('invalido', faltaEmpleado);
+            if (faltaMotivo || faltaEmpleado) {
+              aviso('El motivo (mínimo 5 caracteres) y el nombre del empleado son obligatorios.', 'error', 6000);
+              (faltaMotivo ? motivo : empleado).focus();
+              return false;
+            }
+            notas = { motivo: motivo.value.trim(), empleado: empleado.value.trim() };
+          }
+        }
+      ],
+      alCerrar: () => resolver(notas)
+    });
+  });
+}
+
 function confirmarCobro(total, recibido) {
   return new Promise((resolver) => {
     let confirmado = false;
     const efectivo = recibido !== null;
     abrirModal({
-      titulo: 'Confirmar cobro',
+      titulo: 'Confirmar factura',
       ancho: 'sm',
       cuerpo: h`
         <div class="resumen-cobro">
@@ -823,23 +1035,22 @@ function confirmarCobro(total, recibido) {
           ${efectivo ? h`
             <div class="fila"><span>Recibido</span><b>${dinero(recibido)}</b></div>
             <div class="fila vuelto-grande"><span>Vuelto</span><b>${dinero(recibido - total)}</b></div>` : ''}
-          <div class="fila"><span>Impresión</span><b>${config.impresion.imprimirAlCobrar ? FORMATOS[estado.formato] : 'No imprimir'}</b></div>
+          ${proximo ? h`<div class="fila"><span>Formulario del talonario</span><b>No. ${proximo.numero}</b></div>` : ''}
         </div>`,
       botones: [
         { texto: 'Volver' },
-        { texto: 'Confirmar  (Enter)', clase: 'btn-exito', primario: true, accion: () => { confirmado = true; } }
+        { texto: 'Generar  (Enter)', clase: 'btn-exito', primario: true, accion: () => { confirmado = true; } }
       ],
       alCerrar: () => resolver(confirmado)
     });
   });
 }
 
-async function imprimirFactura(id, formato, reimpresion) {
-  try {
-    await imprimir(rutaFactura(id, formato, reimpresion));
-  } catch (error) {
-    aviso(`No se pudo imprimir: ${error.message} Use "Reimprimir" en la última factura.`, 'error', 9000);
-  }
+// ---------- Última factura ----------
+
+function registrarUltima(factura) {
+  ultima = { id: factura.id, numero: factura.numero, numeroCompleto: factura.numeroCompleto, total: factura.total, vuelto: factura.vuelto };
+  guardarLocal(CLAVE_ULTIMA, ultima);
 }
 
 function pintarUltima() {
@@ -848,10 +1059,10 @@ function pintarUltima() {
   if (!ultima) return;
   caja.innerHTML = h`
     <div class="ultima-titulo">Última factura</div>
-    <div class="ultima-num">${ultima.numero} · ${dinero(ultima.total)}${ultima.vuelto ? h` · vuelto ${dinero(ultima.vuelto)}` : ''}</div>
+    <div class="ultima-num">${ultima.numeroCompleto || ultima.numero} · ${dinero(ultima.total)}${ultima.vuelto ? h` · vuelto ${dinero(ultima.vuelto)}` : ''}</div>
     <div class="acciones">
-      <button type="button" class="btn btn-sm" data-accion="reimprimir">Reimprimir</button>
-      <button type="button" class="btn btn-sm" data-accion="ver">Ver</button>
+      <button type="button" class="btn btn-sm" data-accion="imprimir">Imprimir</button>
+      <button type="button" class="btn btn-sm" data-accion="ver">Vista previa</button>
       ${esEscritorio ? h`<button type="button" class="btn btn-sm" data-accion="pdf">PDF</button>` : ''}
     </div>`;
 }
@@ -859,16 +1070,17 @@ function pintarUltima() {
 async function accionUltima(e) {
   const boton = e.target.closest('[data-accion]');
   if (!boton || !ultima) return;
-  const formato = estado.formato;
-  if (boton.dataset.accion === 'reimprimir') {
-    await imprimirFactura(ultima.id, formato, true);
-  } else if (boton.dataset.accion === 'ver') {
-    vistaPrevia(rutaFactura(ultima.id, formato, true), `Factura ${ultima.numero}`);
-  } else if (boton.dataset.accion === 'pdf') {
-    try {
-      await guardarPdf(rutaFactura(ultima.id, 'Carta'), `Factura-${ultima.numero}.pdf`);
-    } catch (error) {
-      aviso(error.message, 'error');
+  const titulo = `Factura ${ultima.numeroCompleto || ultima.numero}`;
+  try {
+    if (boton.dataset.accion === 'imprimir') {
+      await imprimir(rutaFactura(ultima.id));
+      aviso(`${titulo} enviada a la impresora.`);
+    } else if (boton.dataset.accion === 'ver') {
+      vistaPrevia(rutaVista(ultima.id, true), titulo, { rutaImpresion: rutaFactura(ultima.id), textoImprimir: 'Imprimir en talonario' });
+    } else if (boton.dataset.accion === 'pdf') {
+      await guardarPdf(rutaVista(ultima.id), `Factura-${ultima.numeroCompleto || ultima.numero}.pdf`);
     }
+  } catch (error) {
+    aviso(error.message, 'error', 7000);
   }
 }

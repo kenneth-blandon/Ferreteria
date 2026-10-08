@@ -17,6 +17,12 @@ public interface IFacturaRepositorio
     /// <summary>Marca la factura como anulada y devuelve las existencias al inventario.</summary>
     Factura Anular(long id, string motivo, DateTime fecha);
 
+    /// <summary>
+    /// Reemplaza el contenido de una factura emitida (mismo número) en una sola transacción:
+    /// ajusta existencias por la diferencia de cantidades y guarda la constancia con la versión anterior.
+    /// </summary>
+    Factura Modificar(Factura anterior, Factura nueva, ModificacionFactura modificacion, bool permitirStockNegativo);
+
     long LeerSiguienteNumero();
 
     bool ExisteNumero(string serie, long numero);

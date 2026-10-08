@@ -143,6 +143,11 @@ export function aviso(mensaje, tipo = 'ok', milisegundos = 3500) {
 const pila = [];
 export const hayModal = () => pila.length > 0;
 
+/** Cierra todas las ventanas abiertas (al cambiar de módulo). */
+export function cerrarModales() {
+  while (pila.length) pila.at(-1).cerrar();
+}
+
 /**
  * Abre una ventana modal.
  * botones: [{ texto, clase, primario, accion(modal) }] — si la acción devuelve false la ventana queda abierta.

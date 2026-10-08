@@ -15,25 +15,24 @@ export async function montar(contenedor) {
       <div class="acciones">
         <input type="date" id="dia" value="${dia}" style="width:auto">
         <button type="button" class="btn" id="vista">Vista previa</button>
-        <button type="button" class="btn" id="ticket">Imprimir ticket</button>
-        <button type="button" class="btn btn-primario" id="carta">Imprimir hoja carta</button>
+        <button type="button" class="btn btn-primario" id="imprimir" title="Se imprime en hoja carta (papel en blanco)">Imprimir cierre</button>
       </div>
     </div>
     <div id="contenido"></div>`;
 
   $('#dia', raiz).addEventListener('change', (e) => { dia = e.target.value || hoyIso(); cargar(); });
-  $('#vista', raiz).addEventListener('click', () => vistaPrevia(ruta('Carta'), `Cierre de caja ${fecha(dia + 'T00:00')}`));
-  $('#ticket', raiz).addEventListener('click', () => imprimirCierre('Ticket'));
-  $('#carta', raiz).addEventListener('click', () => imprimirCierre('Carta'));
+  $('#vista', raiz).addEventListener('click', () =>
+    vistaPrevia(ruta(), `Cierre de caja ${fecha(dia + 'T00:00')}`, { rutaImpresion: ruta(), textoImprimir: 'Imprimir cierre' }));
+  $('#imprimir', raiz).addEventListener('click', imprimirCierre);
   await cargar();
 }
 
-const ruta = (formato) => conParametros('/imprimir/cierre', { fecha: dia, formato });
+const ruta = () => conParametros('/imprimir/cierre', { fecha: dia });
 
-async function imprimirCierre(formato) {
+async function imprimirCierre() {
   try {
-    await imprimir(ruta(formato));
-    aviso('Cierre enviado a la impresora.');
+    await imprimir(ruta());
+    aviso('Cierre enviado a la impresora. Use papel en blanco, no el talonario.');
   } catch (error) {
     aviso(error.message, 'error', 7000);
   }
@@ -82,7 +81,8 @@ async function cargar() {
         ? h`<table class="tabla"><thead><tr><th>No.</th><th>Hora</th><th>Cliente</th><th>Pago</th><th class="num">Total</th><th>Estado</th></tr></thead>
             <tbody>${r.facturas.map((f) => h`<tr class="${f.estado === 'Anulada' ? 'anulada' : ''}">
               <td>${f.numeroCompleto}</td><td>${hora(f.fecha)}</td><td>${f.clienteNombre}</td><td>${f.metodoPago}</td>
-              <td class="num total-celda">${dinero(f.total)}</td><td>${f.estado}</td></tr>`)}</tbody></table>`
+              <td class="num total-celda">${dinero(f.total)}</td>
+              <td>${f.estado}${f.modificada && f.estado !== 'Anulada' ? h` <span class="chip chip-ambar">MODIFICADA</span>` : ''}</td></tr>`)}</tbody></table>`
         : h`<div class="vacio">No hay facturas en esta fecha.</div>`}
     </div>`;
 }

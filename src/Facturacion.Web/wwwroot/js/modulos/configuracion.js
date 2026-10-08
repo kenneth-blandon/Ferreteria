@@ -1,8 +1,9 @@
-// Configuración: datos del negocio, numeración e IVA, impresión (con calibración) y respaldos.
+// Configuración: datos del negocio, numeración e IVA, impresión en el talonario (con calibración) y respaldos.
 import { api } from '../api.js';
 import { $, h, aviso, confirmar, descargar, leerFormulario } from '../ui.js';
 import { obtenerConfiguracion } from '../config.js';
 import { imprimir, vistaPrevia, esEscritorio } from '../impresion.js';
+import { ruc, telefonos, validarAlSalir } from '../validacion.js';
 
 let raiz;
 
@@ -19,24 +20,25 @@ export async function montar(contenedor) {
     <div class="encabezado"><div><h1>Configuración</h1><p>Cada sección se guarda por separado.</p></div></div>
     <div class="columnas">
       <div>
-        <form class="tarjeta seccion" id="formNegocio">
+        <form class="tarjeta seccion" id="formNegocio" novalidate>
           <h2>Datos del negocio</h2>
+          <p class="suave" style="margin-top:0">Se muestran en la vista previa de la factura (el talonario ya los trae impresos).</p>
           <div class="rejilla">
             <div class="campo"><label>Nombre comercial *</label><input name="nombreComercial" value="${n.nombreComercial}" maxlength="80"></div>
             <div class="campo"><label>Giro / actividad</label><input name="giro" value="${n.giro}" maxlength="80"></div>
             <div class="campo"><label>Propietario</label><input name="propietario" value="${n.propietario}" maxlength="80"></div>
-            <div class="campo"><label>RUC</label><input name="ruc" value="${n.ruc}" maxlength="30"></div>
+            <div class="campo"><label>RUC</label><input name="ruc" value="${n.ruc}" maxlength="20" placeholder="14 caracteres"></div>
             <div class="campo completo"><label>Dirección</label><input name="direccion" value="${n.direccion}" maxlength="160"></div>
-            <div class="campo"><label>Teléfonos</label><input name="telefono" value="${n.telefono}" maxlength="60"></div>
+            <div class="campo"><label>Teléfonos</label><input name="telefono" value="${n.telefono}" maxlength="60" placeholder="86326107 / 84588766">
+              <span class="ayuda">8 dígitos; varios separados por "/"</span></div>
             <div class="campo"><label>Correo</label><input name="email" value="${n.email}" maxlength="80"></div>
-            <div class="campo completo"><label>Mensaje al pie del ticket</label><input name="mensajePie" value="${n.mensajePie}" maxlength="120"></div>
-            <div class="campo completo"><label>Condiciones impresas en la factura (una por línea)</label>
+            <div class="campo completo"><label>Condiciones del pagaré (una por línea)</label>
               <textarea name="condiciones" rows="5" maxlength="2000">${n.condiciones}</textarea></div>
           </div>
           <div class="pie-acciones"><button type="submit" class="btn btn-primario">Guardar datos del negocio</button></div>
         </form>
 
-        <form class="tarjeta seccion" id="formFacturacion">
+        <form class="tarjeta seccion" id="formFacturacion" novalidate>
           <h2>Numeración e impuestos</h2>
           <div class="info-caja" style="margin-bottom:10px">El <b>siguiente número</b> debe coincidir con el próximo formulario del talonario físico.</div>
           <div class="rejilla">
@@ -59,42 +61,37 @@ export async function montar(contenedor) {
       </div>
 
       <div>
-        <form class="tarjeta seccion" id="formImpresion">
-          <h2>Impresión</h2>
+        <form class="tarjeta seccion" id="formImpresion" novalidate>
+          <h2>Impresión en el talonario</h2>
+          <p class="suave" style="margin-top:0">La factura se imprime sobre el formulario preimpreso (impresora de matriz de punto):
+            solo se imprimen los datos. En el controlador de la impresora use papel <b>Carta (216 × 279 mm)</b>.</p>
           <div class="rejilla">
-            <div class="campo"><label>Formato predeterminado</label>
-              <select name="formato">
-                ${[['Carta', 'Hoja carta (inyección / láser)'], ['Ticket', 'Ticket (térmica)'], ['Preimpreso', 'Talonario preimpreso (matriz de punto)']]
-                  .map(([v, t]) => h`<option value="${v}" ${i.formato === v ? h`selected` : ''}>${t}</option>`)}
-              </select></div>
-            <div class="campo"><label>Impresora</label>
+            <div class="campo doble"><label>Impresora</label>
               ${impresoras.impresoras.length
                 ? h`<select name="impresora"><option value="">Predeterminada de Windows${impresoras.predeterminada ? ` (${impresoras.predeterminada})` : ''}</option>
                     ${impresoras.impresoras.map((nombre) => h`<option value="${nombre}" ${i.impresora === nombre ? h`selected` : ''}>${nombre}</option>`)}</select>`
                 : h`<input name="impresora" value="${i.impresora || ''}" placeholder="Predeterminada">`}
             </div>
-            <div class="campo"><label>Copias</label><input name="copias" type="number" min="1" max="5" value="${i.copias}"></div>
-            <div class="campo"><label>Ancho del rollo térmico</label>
-              <select name="anchoTicketMm">${[80, 58].map((a) => h`<option value="${a}" ${i.anchoTicketMm === a ? h`selected` : ''}>${a} mm</option>`)}</select></div>
+            <div class="campo"><label>Copias</label><input name="copias" type="number" min="1" max="5" value="${i.copias}">
+              <span class="ayuda">El papel autocopiante ya hace las copias</span></div>
           </div>
-          <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
-            <label class="check"><input type="checkbox" name="imprimirAlCobrar" ${i.imprimirAlCobrar ? h`checked` : ''}> Imprimir automáticamente al cobrar</label>
-            <label class="check"><input type="checkbox" name="mostrarDialogo" ${i.mostrarDialogo ? h`checked` : ''}> Mostrar el cuadro de impresión (en lugar de imprimir directo)</label>
-          </div>
+          <label class="check" style="margin-top:10px"><input type="checkbox" name="mostrarDialogo" ${i.mostrarDialogo ? h`checked` : ''}> Mostrar el cuadro de impresión (en lugar de imprimir directo)</label>
           ${esEscritorio ? '' : h`<div class="aviso-caja" style="margin-top:10px">Modo navegador: se usa el cuadro de impresión del navegador. Elija márgenes "Ninguno" y escala 100%.</div>`}
 
-          <h3 style="margin-top:16px">Calibración del talonario preimpreso</h3>
-          <p class="suave" style="margin:4px 0 10px">Imprima la hoja de prueba en un formulario (o en papel en blanco y sobrepóngalo a contraluz).
-            Si los datos salen corridos, ajuste el desplazamiento: X positivo mueve a la derecha, Y positivo mueve hacia abajo.</p>
+          <h3 style="margin-top:16px">Calibración</h3>
+          <p class="suave" style="margin:4px 0 10px">Las posiciones vienen medidas sobre la foto del talonario. Imprima la hoja de prueba en un
+            formulario (o en papel en blanco y sobrepóngalo a contraluz). Si todo sale corrido, ajuste el desplazamiento:
+            X positivo mueve a la derecha, Y positivo mueve hacia abajo.</p>
           <div class="rejilla">
             <div class="campo"><label>Desplazamiento X (mm)</label><input name="desplazamientoXMm" type="number" step="0.5" value="${i.desplazamientoXMm}"></div>
             <div class="campo"><label>Desplazamiento Y (mm)</label><input name="desplazamientoYMm" type="number" step="0.5" value="${i.desplazamientoYMm}"></div>
           </div>
           <details style="margin-top:8px">
             <summary>Posiciones avanzadas (mm)</summary>
-            <p class="suave" style="margin:4px 0">Posición de cada campo desde la esquina superior izquierda del formulario.</p>
-            <textarea id="plantillaJson" rows="14" class="mono" spellcheck="false">${JSON.stringify(i.plantilla, null, 2)}</textarea>
-            <button type="button" class="btn btn-sm" id="restablecerPlantilla" style="margin-top:6px">Restablecer posiciones originales</button>
+            <p class="suave" style="margin:4px 0">Cada campo es una caja (x, y, ancho, alto) medida desde la esquina superior izquierda
+              de la hoja. Filas: borde superior de la primera fila, alto de cada fila y cantidad de filas.</p>
+            <textarea id="plantillaJson" rows="16" class="mono" spellcheck="false">${JSON.stringify(i.plantilla, null, 2)}</textarea>
+            <button type="button" class="btn btn-sm" id="restablecerPlantilla" style="margin-top:6px">Restablecer posiciones medidas</button>
           </details>
           <div class="pie-acciones">
             <button type="button" class="btn" id="vistaCalibracion">Ver hoja de prueba</button>
@@ -142,8 +139,15 @@ async function guardar(url, datos, mensaje) {
 }
 
 function enlazar() {
-  $('#formNegocio', raiz).addEventListener('submit', async (e) => {
+  const formNegocio = $('#formNegocio', raiz);
+  const revisarRuc = validarAlSalir(formNegocio.querySelector('[name="ruc"]'), ruc);
+  const revisarTelefonos = validarAlSalir(formNegocio.querySelector('[name="telefono"]'), telefonos);
+  formNegocio.addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (!revisarRuc() || !revisarTelefonos()) {
+      aviso('Corrija los datos marcados en rojo.', 'error');
+      return;
+    }
     if (await guardar('/api/configuracion/negocio', leerFormulario(e.target), 'Datos del negocio guardados.')) {
       const { negocio } = await obtenerConfiguracion();
       $('#marcaNombre').textContent = negocio.nombreComercial;
@@ -176,7 +180,10 @@ function enlazar() {
 
   // La hoja de prueba usa lo guardado: se guarda antes de mostrarla.
   $('#vistaCalibracion', raiz).addEventListener('click', async () => {
-    if (await guardarImpresion()) vistaPrevia('/imprimir/calibracion?cuadricula=true', 'Hoja de prueba del preimpreso');
+    if (await guardarImpresion()) {
+      vistaPrevia('/imprimir/calibracion?cuadricula=true', 'Hoja de prueba del talonario',
+        { rutaImpresion: '/imprimir/calibracion?cuadricula=false', textoImprimir: 'Imprimir hoja de prueba' });
+    }
   });
   $('#imprimirCalibracion', raiz).addEventListener('click', async () => {
     if (!(await guardarImpresion())) return;
@@ -210,8 +217,7 @@ function enlazar() {
 }
 
 async function guardarImpresion() {
-  const formulario = $('#formImpresion', raiz);
-  const d = leerFormulario(formulario);
+  const d = leerFormulario($('#formImpresion', raiz));
   let plantilla;
   try {
     plantilla = JSON.parse($('#plantillaJson', raiz).value);
@@ -220,12 +226,9 @@ async function guardarImpresion() {
     return false;
   }
   return guardar('/api/configuracion/impresion', {
-    formato: d.formato,
     impresora: d.impresora,
-    imprimirAlCobrar: d.imprimirAlCobrar,
     mostrarDialogo: d.mostrarDialogo,
     copias: numeroONulo(d.copias) ?? 1,
-    anchoTicketMm: numeroONulo(d.anchoTicketMm) ?? 80,
     desplazamientoXMm: numeroONulo(d.desplazamientoXMm) ?? 0,
     desplazamientoYMm: numeroONulo(d.desplazamientoYMm) ?? 0,
     plantilla

@@ -45,10 +45,9 @@ public sealed class ServicioConfiguracion(IConfiguracionRepositorio repositorio,
             Giro = Largo(Texto.Limpiar(datos.Giro), "el giro", 80),
             Propietario = Largo(Texto.Limpiar(datos.Propietario), "el propietario", 80),
             Direccion = Largo(Texto.Limpiar(datos.Direccion), "la dirección", 160),
-            Telefono = Largo(Texto.Limpiar(datos.Telefono), "el teléfono", 60),
+            Telefono = Largo(Identificacion.Telefonos(datos.Telefono), "los teléfonos", 60),
             Email = Largo(Texto.Limpiar(datos.Email), "el correo", 80),
-            Ruc = Largo(Texto.Mayusculas(datos.Ruc), "el RUC", 30),
-            MensajePie = Largo(Texto.Limpiar(datos.MensajePie), "el mensaje de pie", 120),
+            Ruc = Identificacion.Ruc(datos.Ruc) ?? "",
             Condiciones = Largo((datos.Condiciones ?? "").Trim(), "las condiciones", 2000)
         };
         Escribir(ClavesConfiguracion.Negocio, limpio);
@@ -97,8 +96,6 @@ public sealed class ServicioConfiguracion(IConfiguracionRepositorio repositorio,
     {
         if (datos.Copias is < 1 or > 5)
             throw new ReglaNegocioException("Las copias deben estar entre 1 y 5.");
-        if (datos.AnchoTicketMm is not (58 or 80))
-            throw new ReglaNegocioException("El ancho del ticket debe ser 58 u 80 mm.");
         if (Math.Abs(datos.DesplazamientoXMm) > 30 || Math.Abs(datos.DesplazamientoYMm) > 30)
             throw new ReglaNegocioException("El desplazamiento de calibración debe estar entre -30 y 30 mm.");
         ValidarPlantilla(datos.Plantilla ?? throw new ReglaNegocioException("Falta la plantilla del formato preimpreso."));
@@ -121,15 +118,25 @@ public sealed class ServicioConfiguracion(IConfiguracionRepositorio repositorio,
         var columnas = new[] { p.Cantidad, p.Descripcion, p.PrecioUnitario, p.Importe };
         if (posiciones.Any(x => x is null) || columnas.Any(x => x is null))
             throw new ReglaNegocioException("La plantilla del preimpreso está incompleta. Use 'Restablecer plantilla'.");
-        if (posiciones.Any(x => x.X is < 0 or > 400 || x.Y is < 0 or > 400 || x.Ancho is < 0 or > 400)
-            || columnas.Any(x => x.X is < 0 or > 400 || x.Ancho is < 0 or > 400)
+        if (posiciones.Any(x => x.X is < 0 or > 400 || x.Y is < 0 or > 400 || x.Ancho is <= 0 or > 400)
+            || columnas.Any(x => x.X is < 0 or > 400 || x.Ancho is <= 0 or > 400)
             || p.Filas.Y is < 0 or > 400)
             throw new ReglaNegocioException("Las posiciones del preimpreso deben estar entre 0 y 400 mm.");
+        if (posiciones.Any(x => x.Alto is < 3 or > 30))
+            throw new ReglaNegocioException("El alto de cada casilla del preimpreso debe estar entre 3 y 30 mm.");
     }
 
-    private T Leer<T>(string clave) where T : new()
+    private T Leer<T>(string clave) where T : new() => DesdeJson<T>(repositorio.Leer(clave));
+
+    private void Escribir<T>(string clave, T valor) =>
+        repositorio.Escribir(clave, JsonSerializer.Serialize(valor, OpcionesJson));
+
+    /// <summary>Serializa con el mismo formato que usa la tabla de configuración (para datos iniciales).</summary>
+    public static string ComoJson<T>(T valor) => JsonSerializer.Serialize(valor, OpcionesJson);
+
+    /// <summary>Lee una sección guardada; si falta o está dañada devuelve los valores predeterminados.</summary>
+    public static T DesdeJson<T>(string? json) where T : new()
     {
-        var json = repositorio.Leer(clave);
         if (string.IsNullOrWhiteSpace(json)) return new T();
         try
         {
@@ -140,12 +147,6 @@ public sealed class ServicioConfiguracion(IConfiguracionRepositorio repositorio,
             return new T();
         }
     }
-
-    private void Escribir<T>(string clave, T valor) =>
-        repositorio.Escribir(clave, JsonSerializer.Serialize(valor, OpcionesJson));
-
-    /// <summary>Serializa con el mismo formato que usa la tabla de configuración (para datos iniciales).</summary>
-    public static string ComoJson<T>(T valor) => JsonSerializer.Serialize(valor, OpcionesJson);
 
     private static string Requerido(string valor, string campo, int largoMaximo)
     {

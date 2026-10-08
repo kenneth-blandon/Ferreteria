@@ -1,21 +1,21 @@
 // Catálogo de productos: alta/edición, cambio rápido de precio, ajustes de existencias,
-// categorías e importación/exportación con Excel.
+// categorías, unidades, cambios en bloque e importación/exportación con Excel.
 import { api, conParametros } from '../api.js';
 import {
-  $, h, dinero, numero2, cantidad as formatoCantidad, valorEntrada, aNumero, debounce, aviso, confirmar,
+  $, $$, h, dinero, numero2, cantidad as formatoCantidad, valorEntrada, aNumero, debounce, aviso, confirmar,
   abrirModal, fechaHora, descargar
 } from '../ui.js';
 import { actualizarAlertas } from '../app.js';
 
-const UNIDADES = ['UND', 'MTS', 'PIE', 'LBS', 'KG', 'GLN', 'LTS', 'ROLLO', 'CAJA', 'BOLSA', 'PAR', 'JGO', 'QQ'];
 const TIPOS_MOVIMIENTO = {
-  Inicial: 'Existencia inicial', Entrada: 'Entrada', Salida: 'Salida', Conteo: 'Conteo físico',
-  Venta: 'Venta', Anulacion: 'Anulación', Importacion: 'Importación'
+  Inicial: 'Existencia inicial', Entrada: 'Entrada', Salida: 'Salida', Conteo: 'Conteo físico', Venta: 'Venta',
+  Anulacion: 'Anulación', Importacion: 'Importación', Modificacion: 'Modificación de factura'
 };
 
 let raiz;
 let filtro;
 let categorias = [];
+let unidades = [];
 let productos = [];
 
 export async function montar(contenedor, parametros) {
@@ -23,7 +23,7 @@ export async function montar(contenedor, parametros) {
   filtro = { texto: '', categoriaId: '', bajoStock: parametros.get('bajoStock') === '1', pagina: 1 };
   raiz.innerHTML = plantilla();
   enlazar();
-  await cargarCategorias();
+  await Promise.all([cargarCategorias(), cargarUnidades()]);
   await cargar();
   $('#filtroTexto', raiz).focus();
   return { teclas };
@@ -41,9 +41,11 @@ function plantilla() {
       <div><h1>Productos</h1><p>Catálogo, precios y existencias. Haga clic en un precio para cambiarlo.</p></div>
       <div class="acciones">
         <button type="button" class="btn" id="btnCategorias">Categorías</button>
-        <button type="button" class="btn" id="btnImportar">Importar Excel / CSV</button>
-        <button type="button" class="btn" id="btnExportar">Exportar a Excel</button>
-        <button type="button" class="btn btn-primario" id="btnNuevo">+ Nuevo producto <kbd>F3</kbd></button>
+        <button type="button" class="btn" id="btnUnidades">Unidades</button>
+        <button type="button" class="btn" id="btnMasivo" title="Cambiar la categoría o la unidad de varios productos a la vez">Modificar en bloque</button>
+        <button type="button" class="btn" id="btnImportar">Importar</button>
+        <button type="button" class="btn" id="btnExportar">Exportar</button>
+        <button type="button" class="btn btn-primario" id="btnNuevo">+ Nuevo <kbd>F3</kbd></button>
         <input type="file" id="archivoImportar" accept=".xlsx,.xlsm,.csv,.txt" hidden>
       </div>
     </div>
@@ -85,7 +87,9 @@ function enlazar() {
   $('#siguiente', raiz).addEventListener('click', () => { filtro.pagina++; cargar(); });
 
   $('#btnNuevo', raiz).addEventListener('click', () => formularioProducto());
-  $('#btnCategorias', raiz).addEventListener('click', ventanaCategorias);
+  $('#btnCategorias', raiz).addEventListener('click', () => ventanaLista(CATEGORIAS));
+  $('#btnUnidades', raiz).addEventListener('click', () => ventanaLista(UNIDADES));
+  $('#btnMasivo', raiz).addEventListener('click', ventanaMasiva);
   $('#btnExportar', raiz).addEventListener('click', () => descargar('/api/inventario/exportar'));
   $('#btnImportar', raiz).addEventListener('click', ventanaImportar);
   $('#archivoImportar', raiz).addEventListener('change', importar);
@@ -105,9 +109,14 @@ function enlazar() {
 
 async function cargarCategorias() {
   categorias = await api.get('/api/categorias');
+  if (!raiz.isConnected) return;
   const select = $('#filtroCategoria', raiz);
   select.innerHTML = h`<option value="">Todas</option>${categorias.map((c) => h`<option value="${c.id}">${c.nombre} (${c.totalProductos})</option>`)}`;
   select.value = filtro.categoriaId;
+}
+
+async function cargarUnidades() {
+  unidades = await api.get('/api/unidades');
 }
 
 async function cargar() {
@@ -191,6 +200,12 @@ function editarPrecio(celda, producto) {
 
 // ---------- Alta y edición ----------
 
+function opcionesUnidad(seleccionada) {
+  const nombres = unidades.map((u) => u.nombre);
+  if (seleccionada && !nombres.includes(seleccionada)) nombres.push(seleccionada);
+  return h`${nombres.map((n) => h`<option value="${n}" ${n === seleccionada ? h`selected` : ''}>${n}</option>`)}`;
+}
+
 function formularioProducto(producto = null) {
   const nuevo = !producto;
   const p = producto || { codigo: '', codigoBarras: '', nombre: '', categoriaId: '', unidad: 'UND', precio: '', stockMinimo: 0 };
@@ -206,8 +221,8 @@ function formularioProducto(producto = null) {
           <select name="categoriaId"><option value="">Sin categoría</option>
             ${categorias.map((c) => h`<option value="${c.id}" ${c.id === p.categoriaId ? h`selected` : ''}>${c.nombre}</option>`)}
           </select></div>
-        <div class="campo"><label>Unidad</label><input name="unidad" list="unidadesProducto" value="${p.unidad}" maxlength="12">
-          <datalist id="unidadesProducto">${UNIDADES.map((u) => h`<option value="${u}">`)}</datalist></div>
+        <div class="campo"><label>Unidad de medida</label><select name="unidad">${opcionesUnidad(p.unidad)}</select>
+          <span class="ayuda">¿Falta una? Agréguela en "Unidades".</span></div>
         <div class="campo"><label>Precio de venta *</label><input name="precio" class="num" inputmode="decimal" value="${p.precio === '' ? '' : valorEntrada(p.precio)}" placeholder="0.00"></div>
         <div class="campo"><label>Stock mínimo (alerta)</label><input name="stockMinimo" class="num" inputmode="decimal" value="${valorEntrada(p.stockMinimo, 3)}">
           <span class="ayuda">0 = sin alerta</span></div>
@@ -239,8 +254,7 @@ function formularioProducto(producto = null) {
           };
           const guardado = nuevo ? await api.post('/api/productos', datos) : await api.put(`/api/productos/${p.id}`, datos);
           aviso(`Producto ${guardado.codigo} guardado.`);
-          await cargar();
-          await cargarCategorias();
+          await Promise.all([cargar(), cargarCategorias(), cargarUnidades()]);
           actualizarAlertas();
         }
       }
@@ -341,68 +355,213 @@ async function ventanaMovimientos(producto) {
   }
 }
 
-// ---------- Categorías ----------
+// ---------- Categorías y unidades (listas administrables) ----------
 
-function ventanaCategorias() {
+const CATEGORIAS = {
+  titulo: 'Categorías / familias', ruta: '/api/categorias', ejemplo: 'Nueva categoría (ej. Pinturas)', largo: 60,
+  borrar: (x) => `¿Eliminar la categoría ${x.nombre}? Sus ${x.totalProductos} productos quedarán sin categoría.`
+};
+const UNIDADES = {
+  titulo: 'Unidades de medida', ruta: '/api/unidades', ejemplo: 'Nueva unidad (ej. YARDA)', largo: 12,
+  nota: 'Renombrar una unidad la cambia en todos sus productos. Para eliminarla, ningún producto debe usarla.',
+  borrar: (x) => `¿Eliminar la unidad ${x.nombre}?`
+};
+
+function ventanaLista(tipo) {
+  let elementos = [];
   const modal = abrirModal({
-    titulo: 'Categorías / familias',
+    titulo: tipo.titulo,
     cuerpo: h`
+      ${tipo.nota ? h`<p class="suave" style="margin-top:0">${tipo.nota}</p>` : ''}
       <div class="acciones" style="margin-bottom:12px" data-enter-propio>
-        <input id="nuevaCategoria" placeholder="Nueva categoría (ej. Pinturas)" maxlength="60" style="flex:1" autocomplete="off">
-        <button type="button" class="btn btn-primario" id="agregarCategoria">Agregar</button>
+        <input id="nuevoElemento" placeholder="${tipo.ejemplo}" maxlength="${tipo.largo}" style="flex:1" autocomplete="off">
+        <button type="button" class="btn btn-primario" id="agregarElemento">Agregar</button>
       </div>
-      <table class="tabla"><tbody id="listaCategorias"></tbody></table>`,
+      <table class="tabla"><tbody id="listaElementos"></tbody></table>`,
     botones: [{ texto: 'Cerrar' }],
-    alCerrar: async () => { await cargarCategorias(); await cargar(); }
+    alCerrar: async () => {
+      await Promise.all([cargarCategorias(), cargarUnidades()]);
+      await cargar();
+    }
   });
   const cuerpo = modal.cuerpo;
 
   const pintarLista = () => {
-    $('#listaCategorias', cuerpo).innerHTML = h`${categorias.map((c) => h`
-      <tr data-id="${c.id}">
-        <td><input value="${c.nombre}" maxlength="60" data-nombre data-enter-propio></td>
-        <td class="num suave" style="width:110px">${c.totalProductos} productos</td>
+    $('#listaElementos', cuerpo).innerHTML = h`${elementos.map((x) => h`
+      <tr data-id="${x.id}">
+        <td><input value="${x.nombre}" maxlength="${tipo.largo}" data-nombre data-enter-propio></td>
+        <td class="num suave" style="width:110px">${x.totalProductos} productos</td>
         <td style="width:150px"><div class="acciones-fila">
           <button type="button" class="btn btn-sm" data-guardar>Renombrar</button>
           <button type="button" class="btn-icono peligro" data-borrar title="Eliminar">✕</button>
         </div></td>
       </tr>`)}`;
   };
-  const refrescar = async () => { categorias = await api.get('/api/categorias'); pintarLista(); };
+  const refrescar = async () => { elementos = await api.get(tipo.ruta); pintarLista(); };
 
   const agregar = async () => {
-    const entrada = $('#nuevaCategoria', cuerpo);
+    const entrada = $('#nuevoElemento', cuerpo);
     if (!entrada.value.trim()) return;
     try {
-      await api.post('/api/categorias', { nombre: entrada.value });
+      await api.post(tipo.ruta, { nombre: entrada.value });
       entrada.value = '';
       await refrescar();
     } catch (error) { aviso(error.message, 'error'); }
   };
-  $('#agregarCategoria', cuerpo).addEventListener('click', agregar);
-  $('#nuevaCategoria', cuerpo).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); agregar(); } });
+  $('#agregarElemento', cuerpo).addEventListener('click', agregar);
+  $('#nuevoElemento', cuerpo).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); agregar(); } });
 
-  $('#listaCategorias', cuerpo).addEventListener('click', async (e) => {
+  $('#listaElementos', cuerpo).addEventListener('click', async (e) => {
     const fila = e.target.closest('tr[data-id]');
     if (!fila) return;
-    const id = Number(fila.dataset.id);
+    const elemento = elementos.find((x) => x.id === Number(fila.dataset.id));
     try {
       if (e.target.closest('[data-guardar]')) {
-        await api.put(`/api/categorias/${id}`, { nombre: fila.querySelector('[data-nombre]').value });
-        aviso('Categoría renombrada.');
+        await api.put(`${tipo.ruta}/${elemento.id}`, { nombre: fila.querySelector('[data-nombre]').value });
+        aviso('Nombre actualizado.');
         await refrescar();
       } else if (e.target.closest('[data-borrar]')) {
-        const categoria = categorias.find((c) => c.id === id);
-        if (await confirmar(`¿Eliminar la categoría ${categoria.nombre}? Sus ${categoria.totalProductos} productos quedarán sin categoría.`,
-          { titulo: 'Eliminar categoría', textoSi: 'Eliminar', peligro: true })) {
-          await api.borrar(`/api/categorias/${id}`);
+        if (await confirmar(tipo.borrar(elemento), { titulo: 'Eliminar', textoSi: 'Eliminar', peligro: true })) {
+          await api.borrar(`${tipo.ruta}/${elemento.id}`);
           await refrescar();
         }
       }
-    } catch (error) { aviso(error.message, 'error'); }
+    } catch (error) { aviso(error.message, 'error', 7000); }
   });
-  pintarLista();
-  $('#nuevaCategoria', cuerpo).focus();
+  refrescar();
+  $('#nuevoElemento', cuerpo).focus();
+}
+
+// ---------- Cambios en bloque ----------
+
+/**
+ * Cambia la categoría o la unidad de los productos marcados. Nombre, precio, códigos y existencias
+ * NO se cambian en bloque (el servidor solo acepta estos dos campos).
+ */
+function ventanaMasiva() {
+  const seleccion = new Map();
+  let campo = 'Categoria';
+  let lista = [];
+
+  const modal = abrirModal({
+    titulo: 'Modificar productos en bloque',
+    ancho: 'xl',
+    cuerpo: h`
+      <div class="masivo-encabezado">
+        <div class="campo"><label>1. ¿Qué desea cambiar?</label>
+          <div class="segmentado segmentado-2" id="campoMasivo">
+            <button type="button" data-campo="Categoria" class="activo">Categoría</button>
+            <button type="button" data-campo="Unidad">Unidad</button>
+          </div></div>
+        <div class="campo"><label id="etqValorMasivo">2. Nueva categoría</label><select id="valorMasivo"></select></div>
+        <div class="info-caja">En bloque solo se cambia la categoría o la unidad. Nombre, precio, código, código de barras y existencias se editan producto por producto.</div>
+      </div>
+      <div class="barra masivo-filtros" data-enter-propio>
+        <div class="campo crece"><label>3. Busque y marque los productos</label><input id="buscarMasivo" placeholder="Código, nombre o categoría" autocomplete="off"></div>
+        <div class="campo"><label>Mostrar categoría</label><select id="filtroMasivo"></select></div>
+      </div>
+      <div class="tabla-contenedor masivo-lista">
+        <table class="tabla">
+          <thead><tr><th style="width:38px"><input type="checkbox" id="todosMasivo" title="Marcar todos los mostrados"></th>
+            <th>Código</th><th>Nombre</th><th>Categoría</th><th>Unidad</th></tr></thead>
+          <tbody id="listaMasiva"></tbody>
+        </table>
+        <div class="vacio" id="vacioMasivo" hidden>No hay productos con ese criterio.</div>
+      </div>
+      <div class="pie-tabla"><b id="contadorMasivo">0 productos seleccionados</b>
+        <button type="button" class="btn-link" id="quitarSeleccion">Quitar selección</button></div>`,
+    botones: [
+      { texto: 'Cancelar' },
+      { texto: 'Aplicar cambio', clase: 'btn-primario', primario: true, accion: () => aplicar() }
+    ],
+    alCerrar: async () => {
+      await cargarCategorias();
+      await cargar();
+    }
+  });
+  const c = modal.cuerpo;
+
+  const pintarValores = () => {
+    $('#etqValorMasivo', c).textContent = campo === 'Categoria' ? '2. Nueva categoría' : '2. Nueva unidad';
+    $('#valorMasivo', c).innerHTML = campo === 'Categoria'
+      ? h`${categorias.map((x) => h`<option value="${x.id}">${x.nombre}</option>`)}<option value="">SIN CATEGORÍA</option>`
+      : h`${unidades.map((u) => h`<option value="${u.nombre}">${u.nombre}</option>`)}`;
+  };
+
+  const pintarContador = () => {
+    const n = seleccion.size;
+    $('#contadorMasivo', c).textContent = `${n} ${n === 1 ? 'producto seleccionado' : 'productos seleccionados'}`;
+    const marcables = $$('#listaMasiva input[data-id]', c);
+    $('#todosMasivo', c).checked = marcables.length > 0 && marcables.every((x) => x.checked);
+  };
+
+  const pintarLista = () => {
+    $('#listaMasiva', c).innerHTML = h`${lista.map((p) => h`
+      <tr><td><input type="checkbox" data-id="${p.id}" ${seleccion.has(p.id) ? h`checked` : ''}></td>
+        <td class="mono">${p.codigo}</td><td>${p.nombre}</td><td class="suave">${p.categoria || '—'}</td><td>${p.unidad}</td></tr>`)}`;
+    $('#vacioMasivo', c).hidden = lista.length > 0;
+    pintarContador();
+  };
+
+  const buscar = debounce(async () => {
+    try {
+      const pagina = await api.get(conParametros('/api/productos', {
+        texto: $('#buscarMasivo', c).value, categoriaId: $('#filtroMasivo', c).value, tamano: 200
+      }));
+      lista = pagina.elementos;
+      pintarLista();
+    } catch (error) { aviso(error.message, 'error'); }
+  }, 250);
+
+  async function aplicar() {
+    const n = seleccion.size;
+    if (!n) throw new Error('Marque al menos un producto.');
+    const select = $('#valorMasivo', c);
+    const valor = select.value;
+    const nombreValor = select.selectedOptions[0]?.textContent ?? '';
+    const destino = campo === 'Categoria' ? `categoría ${nombreValor}` : `unidad ${nombreValor}`;
+    const ok = await confirmar(`Estás a punto de modificar ${n} ${n === 1 ? 'producto' : 'productos'} a ${destino}.`,
+      { titulo: 'Confirmar cambio en bloque', textoSi: 'Modificar' });
+    if (!ok) return false;
+
+    const resultado = await api.post('/api/productos/masivo', {
+      productoIds: [...seleccion.keys()],
+      campo,
+      categoriaId: campo === 'Categoria' && valor ? Number(valor) : null,
+      unidad: campo === 'Unidad' ? valor : null
+    });
+    aviso(`Se modificaron ${resultado.actualizados} productos a ${destino}.`, 'ok', 5000);
+    return true;
+  }
+
+  $('#campoMasivo', c).addEventListener('click', (e) => {
+    const boton = e.target.closest('[data-campo]');
+    if (!boton) return;
+    campo = boton.dataset.campo;
+    $$('#campoMasivo button', c).forEach((b) => b.classList.toggle('activo', b === boton));
+    pintarValores();
+  });
+  $('#listaMasiva', c).addEventListener('change', (e) => {
+    const casilla = e.target.closest('input[data-id]');
+    if (!casilla) return;
+    const id = Number(casilla.dataset.id);
+    if (casilla.checked) seleccion.set(id, true); else seleccion.delete(id);
+    pintarContador();
+  });
+  $('#todosMasivo', c).addEventListener('change', (e) => {
+    for (const p of lista) {
+      if (e.target.checked) seleccion.set(p.id, true); else seleccion.delete(p.id);
+    }
+    pintarLista();
+  });
+  $('#quitarSeleccion', c).addEventListener('click', () => { seleccion.clear(); pintarLista(); });
+  $('#buscarMasivo', c).addEventListener('input', buscar);
+  $('#filtroMasivo', c).addEventListener('change', buscar);
+  $('#filtroMasivo', c).innerHTML = h`<option value="">Todas</option>${categorias.map((x) => h`<option value="${x.id}">${x.nombre}</option>`)}`;
+
+  pintarValores();
+  buscar();
+  $('#buscarMasivo', c).focus();
 }
 
 // ---------- Importación ----------
@@ -416,7 +575,7 @@ function ventanaImportar() {
       <ul class="suave" style="padding-left:18px">
         <li>Si el código ya existe, se actualiza el producto (no se duplica).</li>
         <li>Una celda vacía conserva el valor actual (por ejemplo, la existencia).</li>
-        <li>Las categorías nuevas se crean solas.</li>
+        <li>Las categorías y unidades nuevas se crean solas.</li>
       </ul>
       <button type="button" class="btn-link" id="bajarPlantilla">Descargar plantilla de ejemplo (.xlsx)</button>`,
     botones: [
@@ -453,7 +612,7 @@ async function importar(e) {
           : h`<div class="info-caja">Todas las filas se importaron correctamente.</div>`}`,
       botones: [{ texto: 'Cerrar', primario: true }]
     });
-    await cargarCategorias();
+    await Promise.all([cargarCategorias(), cargarUnidades()]);
     await cargar();
     actualizarAlertas();
   } catch (error) {

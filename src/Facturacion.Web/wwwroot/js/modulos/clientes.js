@@ -1,6 +1,7 @@
 // Clientes frecuentes (opcional: por defecto se factura a Consumidor Final).
 import { api, conParametros } from '../api.js';
 import { $, h, debounce, aviso, confirmar, abrirModal, fecha } from '../ui.js';
+import { documento, telefono, validarAlSalir } from '../validacion.js';
 
 let raiz;
 let clientes = [];
@@ -68,13 +69,17 @@ async function cargar() {
 
 function formulario(cliente = null) {
   const c = cliente || { nombre: '', ruc: '', direccion: '', telefono: '' };
-  abrirModal({
+  const modal = abrirModal({
     titulo: cliente ? 'Editar cliente' : 'Nuevo cliente',
     cuerpo: h`
       <div class="rejilla">
         <div class="campo completo"><label>Nombre o razón social *</label><input name="nombre" value="${c.nombre}" maxlength="120" autocomplete="off"></div>
-        <div class="campo"><label>RUC / Cédula</label><input name="ruc" value="${c.ruc || ''}" maxlength="30" autocomplete="off"></div>
-        <div class="campo"><label>Teléfono</label><input name="telefono" value="${c.telefono || ''}" maxlength="40" autocomplete="off"></div>
+        <div class="campo"><label>RUC / Cédula</label><input name="ruc" value="${c.ruc || ''}" maxlength="20" autocomplete="off"
+          placeholder="000-000000-0000A">
+          <span class="ayuda">Cédula con guiones o RUC de 14 caracteres</span></div>
+        <div class="campo"><label>Teléfono</label><input name="telefono" value="${c.telefono || ''}" maxlength="15" inputmode="tel"
+          autocomplete="off" placeholder="89704920">
+          <span class="ayuda">8 dígitos</span></div>
         <div class="campo completo"><label>Dirección</label><input name="direccion" value="${c.direccion || ''}" maxlength="200" autocomplete="off"></div>
       </div>`,
     botones: [
@@ -82,6 +87,10 @@ function formulario(cliente = null) {
       {
         texto: 'Guardar', clase: 'btn-primario', primario: true,
         accion: async (modal) => {
+          if (!revisarRuc() || !revisarTelefono()) {
+            aviso('Corrija los datos marcados en rojo.', 'error');
+            return false;
+          }
           const valor = (nombre) => modal.cuerpo.querySelector(`[name="${nombre}"]`).value;
           const datos = { nombre: valor('nombre'), ruc: valor('ruc'), direccion: valor('direccion'), telefono: valor('telefono') };
           if (cliente) await api.put(`/api/clientes/${cliente.id}`, datos);
@@ -92,6 +101,8 @@ function formulario(cliente = null) {
       }
     ]
   });
+  const revisarRuc = validarAlSalir(modal.cuerpo.querySelector('[name="ruc"]'), documento);
+  const revisarTelefono = validarAlSalir(modal.cuerpo.querySelector('[name="telefono"]'), telefono);
 }
 
 async function eliminar(cliente) {

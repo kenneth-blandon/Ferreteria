@@ -15,4 +15,8 @@
     <ProjectReference Include="..\Facturacion.Core\Facturacion.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Facturacion.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -7,10 +7,10 @@ using static Facturacion.Web.Impresion.Html;
 
 namespace Facturacion.Web.Impresion;
 
-/// <summary>Reporte de cierre de caja en hoja carta o ticket.</summary>
+/// <summary>Reporte de cierre de caja en hoja carta.</summary>
 internal static class PlantillaCierre
 {
-    private const string EstilosCarta = """
+    private const string Estilos = """
         body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; }
         .hoja { width: 216mm; min-height: 279mm; padding: 14mm 16mm; }
         h1 { font-size: 16pt; margin: 0; }
@@ -28,10 +28,7 @@ internal static class PlantillaCierre
         .firmas div { border-top: .3mm solid #000; padding-top: 1.5mm; }
         """;
 
-    public static string Generar(ResumenCierre r, Ajustes ajustes, FormatoImpresion formato, DateTime impreso) =>
-        formato == FormatoImpresion.Ticket ? Ticket(r, ajustes, impreso) : Carta(r, ajustes, impreso);
-
-    private static string Carta(ResumenCierre r, Ajustes ajustes, DateTime impreso)
+    public static string Generar(ResumenCierre r, Ajustes ajustes, DateTime impreso)
     {
         var c = new StringBuilder("<div class=\"hoja\">");
         c.Append($"""
@@ -66,30 +63,15 @@ internal static class PlantillaCierre
             foreach (var f in r.Facturas)
             {
                 var anulada = f.Estado == EstadoFactura.Anulada;
+                var estado = f.Modificada && !anulada ? "Emitida (modificada)" : f.Estado.ToString();
                 c.Append($"<tr{(anulada ? " class=\"anulada\"" : "")}><td>{E(f.NumeroCompleto)}</td><td>{f.Fecha:HH:mm}</td><td>{E(f.ClienteNombre)}</td>" +
-                         $"<td>{f.MetodoPago}</td><td class=\"num\">{Dinero.Formatear(f.Total)}</td><td>{f.Estado}</td></tr>");
+                         $"<td>{f.MetodoPago}</td><td class=\"num\">{Dinero.Formatear(f.Total)}</td><td>{estado}</td></tr>");
             }
             c.Append("</table>");
         }
 
         c.Append("<div class=\"firmas\"><div>ENTREGADO POR</div><div>RECIBIDO POR</div></div></div>");
-        return Documento($"Cierre de caja {r.Fecha:dd-MM-yyyy}", EstilosCarta, c.ToString());
-    }
-
-    private static string Ticket(ResumenCierre r, Ajustes ajustes, DateTime impreso)
-    {
-        var t = new StringBuilder("<div class=\"hoja\">");
-        t.Append($"<div class=\"c g\">{E(ajustes.Negocio.NombreComercial)}</div>");
-        t.Append($"<div class=\"c n\">CIERRE DE CAJA</div><div class=\"c\">{r.Fecha:dd/MM/yyyy}</div><hr>");
-        foreach (var m in r.PorMetodo)
-            t.Append($"<div class=\"fila\"><span>{m.Metodo} ({m.Facturas})</span><span>{Dinero.Formatear(m.Total)}</span></div>");
-        t.Append($"<hr><div class=\"fila total\"><span>TOTAL</span><span>{Dinero.Formatear(r.TotalVendido)}</span></div>");
-        t.Append($"<div class=\"fila\"><span>Emitidas</span><span>{r.FacturasEmitidas}</span></div>");
-        t.Append($"<div class=\"fila\"><span>Anuladas</span><span>{r.FacturasAnuladas}</span></div>");
-        t.Append($"<div class=\"fila\"><span>Numeración</span><span>{Rango(r, ajustes)}</span></div><hr>");
-        t.Append($"<div class=\"c p\">Impreso el {impreso:dd/MM/yyyy HH:mm}</div><br><br>");
-        t.Append("<div class=\"c\">______________________</div><div class=\"c p\">Firma</div></div>");
-        return Documento($"Cierre {r.Fecha:dd-MM-yyyy}", PlantillaTicket.Estilos(ajustes.Impresion.AnchoTicketMm), t.ToString());
+        return Documento($"Cierre de caja {r.Fecha:dd-MM-yyyy}", Estilos, c.ToString());
     }
 
     private static string Rango(ResumenCierre r, Ajustes ajustes) =>

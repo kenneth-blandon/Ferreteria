@@ -3,7 +3,7 @@ using Facturacion.Core.Comun;
 
 namespace Facturacion.Core.Inventario;
 
-public enum TipoMovimiento { Inicial, Entrada, Salida, Conteo, Venta, Anulacion, Importacion }
+public enum TipoMovimiento { Inicial, Entrada, Salida, Conteo, Venta, Anulacion, Importacion, Modificacion }
 
 /// <summary>Historial (kardex simple) de cada cambio de existencias.</summary>
 public sealed class MovimientoInventario
